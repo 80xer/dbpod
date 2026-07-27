@@ -51,7 +51,8 @@
 
 | 문서 | 내용 |
 | --- | --- |
-| [구현 계획](quality/implementation_plan.md) | 수직 슬라이스, 단계별 산출물과 완료 조건 |
+| [MVP 상세 구현 계획](plan/plan-mvp.md) | Phase별 세부 Task, 의존 순서와 체크 가능한 완료 게이트 |
+| [구현 전략 요약](quality/implementation_plan.md) | 수직 슬라이스, 단계별 산출물과 완료 조건 요약 |
 | [테스트 전략](quality/test_strategy.md) | TDD, 단위·통합·E2E·보안 테스트와 CI 게이트 |
 | [플랫폼 지원표](quality/platform_matrix.md) | 데스크톱, 모바일, PostgreSQL 버전별 지원 수준 |
 | [성능 예산](quality/performance_budget.md) | 시작, 실행, Grid, 메모리, 번들 성능 기준 |

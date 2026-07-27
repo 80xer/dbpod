@@ -15,7 +15,7 @@ DBPod는 PostgreSQL에 연결해 SQL을 실행하고, 조회 결과를 탐색·�
 - [애플리케이션 아키텍처](docs/architecture/architecture.md)
 - [IPC 계약](docs/architecture/ipc_contract.md)
 - [위협 모델](docs/security/threat_model.md)
-- [구현 계획](docs/quality/implementation_plan.md)
+- [MVP 상세 구현 계획](docs/plan/plan-mvp.md)
 
 ## 제품 방향
 
