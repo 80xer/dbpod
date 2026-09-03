@@ -17,14 +17,18 @@ pub fn load(dir: &std::path::Path) -> Result<Option<WorkspaceSnapshot>, AppError
             _ => Ok(None),
         },
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(AppError::internal(format!("workspace.json unreadable: {e}"))),
+        Err(e) => Err(AppError::internal(format!(
+            "workspace.json unreadable: {e}"
+        ))),
     }
 }
 
 pub fn save(dir: &std::path::Path, snapshot: &WorkspaceSnapshot) -> Result<(), AppError> {
     let json = serde_json::to_vec(snapshot).map_err(|e| AppError::internal(e.to_string()))?;
     if json.len() > MAX_SNAPSHOT_BYTES {
-        return Err(AppError::invalid_request("workspace snapshot exceeds 5 MiB"));
+        return Err(AppError::invalid_request(
+            "workspace snapshot exceeds 5 MiB",
+        ));
     }
     std::fs::create_dir_all(dir)
         .map_err(|e| AppError::internal(format!("cannot create data dir: {e}")))?;

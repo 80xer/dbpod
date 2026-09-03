@@ -254,7 +254,11 @@ async fn type_spec_acceptance() {
     let (_node, state) = setup().await;
 
     // int8 min/max round-trip without precision loss
-    let row = run_single_row(&state, "SELECT (-9223372036854775808)::int8, 9223372036854775807::int8").await;
+    let row = run_single_row(
+        &state,
+        "SELECT (-9223372036854775808)::int8, 9223372036854775807::int8",
+    )
+    .await;
     assert!(matches!(&row[0], DbValue::Integer { value } if value == "-9223372036854775808"));
     assert!(matches!(&row[1], DbValue::Integer { value } if value == "9223372036854775807"));
 
@@ -283,8 +287,12 @@ async fn type_spec_acceptance() {
         matches!(&row[0], DbValue::Temporal { temporal_type: TemporalType::Timestamp, value }
             if value == "2024-06-15T12:34:56.500")
     );
-    assert!(matches!(&row[1], DbValue::Temporal { temporal_type: TemporalType::Date, value } if value == "2024-06-15"));
-    assert!(matches!(&row[2], DbValue::Temporal { temporal_type: TemporalType::Time, value } if value == "23:59:59"));
+    assert!(
+        matches!(&row[1], DbValue::Temporal { temporal_type: TemporalType::Date, value } if value == "2024-06-15")
+    );
+    assert!(
+        matches!(&row[2], DbValue::Temporal { temporal_type: TemporalType::Time, value } if value == "23:59:59")
+    );
 
     // jsonb big integer stays raw text (no JS number rounding)
     let row = run_single_row(&state, "SELECT '{\"n\": 9007199254740993}'::jsonb").await;
@@ -293,7 +301,9 @@ async fn type_spec_acceptance() {
     // 1-D array with NULL element
     let row = run_single_row(&state, "SELECT ARRAY[1, NULL, 3]::int4[]").await;
     match &row[0] {
-        DbValue::Array { dimensions, values, .. } => {
+        DbValue::Array {
+            dimensions, values, ..
+        } => {
             assert_eq!(dimensions.len(), 1);
             assert_eq!(dimensions[0].length, 3);
             assert!(matches!(values[1], DbValue::Null));
@@ -676,7 +686,10 @@ async fn metadata_and_table_data() {
     )
     .await
     .unwrap();
-    let items = objects.iter().find(|o| o.name == "items").expect("items table");
+    let items = objects
+        .iter()
+        .find(|o| o.name == "items")
+        .expect("items table");
     assert_eq!(items.can_select, Some(true));
     assert!(objects.iter().any(|o| o.name == "we\"ird"));
 
@@ -695,7 +708,11 @@ async fn metadata_and_table_data() {
     assert_eq!(meta.columns.len(), 3);
     assert!(meta.columns[0].is_primary_key);
     assert!(!meta.columns[1].nullable);
-    assert!(meta.columns[0].default_expr.as_deref().unwrap_or("").contains("nextval"));
+    assert!(meta.columns[0]
+        .default_expr
+        .as_deref()
+        .unwrap_or("")
+        .contains("nextval"));
 
     // table data: sorted desc by id, limit 2 offset 1 -> ids 24, 23; xmin rides along
     let (sink, mut rx) = sink_channel();
@@ -757,5 +774,433 @@ async fn metadata_and_table_data() {
     .await
     .unwrap();
     let events = collect_events(&state, &accepted.execution_id, &mut rx).await;
-    assert!(matches!(events.last().unwrap(), QueryStreamEvent::Completed { row_count: 2, .. }));
+    assert!(matches!(
+        events.last().unwrap(),
+        QueryStreamEvent::Completed { row_count: 2, .. }
+    ));
+}
+
+mod editing {
+    use super::*;
+    use dbpod_lib::application::{edit_service, metadata_service};
+    use dbpod_lib::domain::editing::*;
+    use dbpod_lib::domain::metadata::*;
+    use sqlx::Row as _;
+    use std::collections::HashMap;
+
+    fn text(v: &str) -> DbValue {
+        DbValue::Text { value: v.into() }
+    }
+    fn int(v: i64) -> DbValue {
+        DbValue::Integer {
+            value: v.to_string(),
+        }
+    }
+
+    async fn exec_sql(state: &AppState, sql: &str) -> Vec<QueryStreamEvent> {
+        let (sink, mut rx) = sink_channel();
+        let accepted = query_service::execute(state, req("t-edit", sql, 10_000), sink).unwrap();
+        collect_events(state, &accepted.execution_id, &mut rx).await
+    }
+
+    async fn fixture(state: &AppState) -> TableMetadata {
+        for sql in [
+            "CREATE TABLE public.edit_target (id serial PRIMARY KEY, name text NOT NULL, qty int DEFAULT 7, note text, gen_col int GENERATED ALWAYS AS (qty * 2) STORED)",
+            "INSERT INTO public.edit_target (name, qty, note) VALUES ('a', 1, NULL), ('b', 2, ''), ('c', 3, 'x')",
+        ] {
+            let events = exec_sql(state, sql).await;
+            assert!(matches!(events.last().unwrap(), QueryStreamEvent::Completed { .. }), "fixture: {sql}");
+        }
+        let schemas = metadata_service::list_schemas(
+            state,
+            &MetadataListSchemasRequest {
+                connection_id: CONN_ID.into(),
+                include_system: false,
+            },
+        )
+        .await
+        .unwrap();
+        let public = schemas.iter().find(|s| s.name == "public").unwrap().oid;
+        let objects = metadata_service::list_objects(
+            state,
+            &MetadataListObjectsRequest {
+                connection_id: CONN_ID.into(),
+                schema_oids: vec![public],
+                kinds: vec![ObjectKind::Table],
+            },
+        )
+        .await
+        .unwrap();
+        let oid = objects
+            .iter()
+            .find(|o| o.name == "edit_target")
+            .unwrap()
+            .oid;
+        metadata_service::get_table(
+            state,
+            &MetadataGetTableRequest {
+                connection_id: CONN_ID.into(),
+                relation_oid: oid,
+            },
+        )
+        .await
+        .unwrap()
+    }
+
+    /// Reads (id, name, qty, note, xmin) for one row via a fresh probe connection.
+    async fn read_row(
+        state: &AppState,
+        id: i64,
+    ) -> Option<(String, Option<i32>, Option<String>, String)> {
+        let opts = {
+            let ws = state.workspaces.lock().unwrap();
+            ws.get(CONN_ID).unwrap().connect_opts.clone()
+        };
+        let mut c = sqlx::PgConnection::connect_with(&opts).await.unwrap();
+        let row =
+            sqlx::query("SELECT name, qty, note, xmin::text FROM public.edit_target WHERE id = $1")
+                .bind(id)
+                .fetch_optional(&mut c)
+                .await
+                .unwrap();
+        row.map(|r| (r.get(0), r.try_get(1).ok(), r.try_get(2).ok(), r.get(3)))
+    }
+
+    fn identity(meta: &TableMetadata, id: i64, xmin: Option<String>) -> RowIdentity {
+        RowIdentity {
+            relation_oid: meta.relation_oid,
+            primary_key: vec![PrimaryKeyValue {
+                attribute_number: 1,
+                column_name: "id".into(),
+                value: int(id),
+            }],
+            xmin,
+        }
+    }
+
+    fn commit_events() -> (
+        edit_service::CommitSink,
+        tokio::sync::mpsc::UnboundedReceiver<ChangesCommitEvent>,
+    ) {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        (Arc::new(move |e| tx.send(e).is_ok()), rx)
+    }
+
+    async fn drain(
+        mut rx: tokio::sync::mpsc::UnboundedReceiver<ChangesCommitEvent>,
+    ) -> Vec<ChangesCommitEvent> {
+        let mut out = Vec::new();
+        while let Ok(Some(e)) = tokio::time::timeout(Duration::from_secs(10), rx.recv()).await {
+            let terminal = matches!(
+                e,
+                ChangesCommitEvent::Completed { .. }
+                    | ChangesCommitEvent::Conflict { .. }
+                    | ChangesCommitEvent::Failed { .. }
+            );
+            out.push(e);
+            if terminal {
+                break;
+            }
+        }
+        out
+    }
+
+    #[tokio::test]
+    async fn update_with_xmin_succeeds_and_returns_server_values() {
+        let (_node, state) = setup().await;
+        let meta = fixture(&state).await;
+        let (_, _, _, xmin) = read_row(&state, 1).await.unwrap();
+
+        let preview = edit_service::preview(
+            &state,
+            &ChangesPreviewRequest {
+                connection_id: CONN_ID.into(),
+                result_tab_id: "r".into(),
+                relation_oid: meta.relation_oid,
+                changes: vec![RowChange::Update {
+                    row_id: "row-1".into(),
+                    identity: identity(&meta, 1, Some(xmin.clone())),
+                    original_values: HashMap::new(),
+                    changes: HashMap::from([
+                        ("name".into(), text("a2; DROP TABLE public.edit_target; --")),
+                        ("qty".into(), int(42)),
+                    ]),
+                }],
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(preview.counts.update, 1);
+        assert!(preview.statements[0].sql_template.contains("$1"));
+        assert!(preview.statements[0].sql_template.contains("xmin::text ="));
+
+        let (sink, rx) = commit_events();
+        edit_service::commit(
+            &state,
+            &ChangesCommitRequest {
+                change_set_id: preview.change_set_id,
+            },
+            sink,
+        )
+        .await
+        .unwrap();
+        let events = drain(rx).await;
+        let rows = match events.last().unwrap() {
+            ChangesCommitEvent::Completed { rows } => rows,
+            other => panic!("expected completed, got {other:?}"),
+        };
+        assert_eq!(rows.len(), 1);
+        assert!(
+            matches!(&rows[0].values["name"], DbValue::Text { value } if value.contains("DROP TABLE"))
+        );
+        assert!(matches!(&rows[0].values["gen_col"], DbValue::Integer { value } if value == "84"));
+        assert_ne!(rows[0].xmin.as_deref(), Some(xmin.as_str()));
+
+        // the malicious string was stored literally; the table survived
+        let (name, qty, _, _) = read_row(&state, 1).await.unwrap();
+        assert!(name.contains("DROP TABLE"));
+        assert_eq!(qty, Some(42));
+    }
+
+    #[tokio::test]
+    async fn stale_xmin_yields_conflict_with_current_values() {
+        let (_node, state) = setup().await;
+        let meta = fixture(&state).await;
+        let (_, _, _, old_xmin) = read_row(&state, 2).await.unwrap();
+
+        // another session changes the row -> xmin moves on
+        let events = exec_sql(
+            &state,
+            "UPDATE public.edit_target SET qty = 99 WHERE id = 2",
+        )
+        .await;
+        assert!(matches!(
+            events.last().unwrap(),
+            QueryStreamEvent::Completed { .. }
+        ));
+
+        let preview = edit_service::preview(
+            &state,
+            &ChangesPreviewRequest {
+                connection_id: CONN_ID.into(),
+                result_tab_id: "r".into(),
+                relation_oid: meta.relation_oid,
+                changes: vec![RowChange::Update {
+                    row_id: "row-2".into(),
+                    identity: identity(&meta, 2, Some(old_xmin)),
+                    original_values: HashMap::new(),
+                    changes: HashMap::from([("name".into(), text("nope"))]),
+                }],
+            },
+        )
+        .await
+        .unwrap();
+        let (sink, rx) = commit_events();
+        edit_service::commit(
+            &state,
+            &ChangesCommitRequest {
+                change_set_id: preview.change_set_id,
+            },
+            sink,
+        )
+        .await
+        .unwrap();
+        let events = drain(rx).await;
+        match events.last().unwrap() {
+            ChangesCommitEvent::Conflict { conflicts } => {
+                assert_eq!(conflicts.len(), 1);
+                let current = conflicts[0].current.as_ref().expect("current row");
+                assert!(matches!(&current["qty"], DbValue::Integer { value } if value == "99"));
+            }
+            other => panic!("expected conflict, got {other:?}"),
+        }
+        // and nothing was saved
+        let (name, _, _, _) = read_row(&state, 2).await.unwrap();
+        assert_eq!(name, "b");
+    }
+
+    #[tokio::test]
+    async fn insert_batch_distinguishes_null_empty_default_and_rolls_back_atomically() {
+        let (_node, state) = setup().await;
+        let meta = fixture(&state).await;
+
+        // happy batch: null vs empty vs default
+        let preview = edit_service::preview(
+            &state,
+            &ChangesPreviewRequest {
+                connection_id: CONN_ID.into(),
+                result_tab_id: "r".into(),
+                relation_oid: meta.relation_oid,
+                changes: vec![
+                    RowChange::Insert {
+                        row_id: "i1".into(),
+                        values: HashMap::from([
+                            ("name".into(), InsertCellDraft::Value { value: text("d1") }),
+                            ("qty".into(), InsertCellDraft::Default),
+                            ("note".into(), InsertCellDraft::Null),
+                        ]),
+                    },
+                    RowChange::Insert {
+                        row_id: "i2".into(),
+                        values: HashMap::from([
+                            ("name".into(), InsertCellDraft::Value { value: text("d2") }),
+                            ("qty".into(), InsertCellDraft::Value { value: int(5) }),
+                            ("note".into(), InsertCellDraft::Value { value: text("") }),
+                        ]),
+                    },
+                ],
+            },
+        )
+        .await
+        .unwrap();
+        let (sink, rx) = commit_events();
+        edit_service::commit(
+            &state,
+            &ChangesCommitRequest {
+                change_set_id: preview.change_set_id,
+            },
+            sink,
+        )
+        .await
+        .unwrap();
+        let events = drain(rx).await;
+        let rows = match events.last().unwrap() {
+            ChangesCommitEvent::Completed { rows } => rows.clone(),
+            other => panic!("expected completed, got {other:?}"),
+        };
+        let d1 = rows.iter().find(|r| r.row_id == "i1").unwrap();
+        assert!(matches!(&d1.values["qty"], DbValue::Integer { value } if value == "7")); // default
+        assert!(matches!(d1.values["note"], DbValue::Null));
+        let d2 = rows.iter().find(|r| r.row_id == "i2").unwrap();
+        assert!(matches!(&d2.values["note"], DbValue::Text { value } if value.is_empty()));
+
+        // failing batch: second row violates NOT NULL -> whole batch rolls back
+        let preview = edit_service::preview(
+            &state,
+            &ChangesPreviewRequest {
+                connection_id: CONN_ID.into(),
+                result_tab_id: "r".into(),
+                relation_oid: meta.relation_oid,
+                changes: vec![
+                    RowChange::Insert {
+                        row_id: "ok".into(),
+                        values: HashMap::from([(
+                            "name".into(),
+                            InsertCellDraft::Value {
+                                value: text("will-rollback"),
+                            },
+                        )]),
+                    },
+                    RowChange::Insert {
+                        row_id: "bad".into(),
+                        values: HashMap::from([("name".into(), InsertCellDraft::Null)]),
+                    },
+                ],
+            },
+        )
+        .await
+        .unwrap();
+        let (sink, rx) = commit_events();
+        edit_service::commit(
+            &state,
+            &ChangesCommitRequest {
+                change_set_id: preview.change_set_id,
+            },
+            sink,
+        )
+        .await
+        .unwrap();
+        let events = drain(rx).await;
+        match events.last().unwrap() {
+            ChangesCommitEvent::Failed { error } => {
+                assert_eq!(error.sql_state.as_deref(), Some("23502"))
+            }
+            other => panic!("expected failed, got {other:?}"),
+        }
+        let events = exec_sql(
+            &state,
+            "SELECT count(*) FROM public.edit_target WHERE name = 'will-rollback'",
+        )
+        .await;
+        let rows = events
+            .iter()
+            .find_map(|e| match e {
+                QueryStreamEvent::Rows { rows, .. } => Some(rows.clone()),
+                _ => None,
+            })
+            .unwrap();
+        assert!(matches!(&rows[0][0], DbValue::Integer { value } if value == "0"));
+    }
+
+    #[tokio::test]
+    async fn delete_and_guards() {
+        let (_node, state) = setup().await;
+        let meta = fixture(&state).await;
+        let (_, _, _, xmin) = read_row(&state, 3).await.unwrap();
+
+        // generated column rejected at preview
+        let err = edit_service::preview(
+            &state,
+            &ChangesPreviewRequest {
+                connection_id: CONN_ID.into(),
+                result_tab_id: "r".into(),
+                relation_oid: meta.relation_oid,
+                changes: vec![RowChange::Update {
+                    row_id: "g".into(),
+                    identity: identity(&meta, 3, Some(xmin.clone())),
+                    original_values: HashMap::new(),
+                    changes: HashMap::from([("gen_col".into(), int(1))]),
+                }],
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(err.message.contains("generated"));
+
+        // delete via PK + xmin
+        let preview = edit_service::preview(
+            &state,
+            &ChangesPreviewRequest {
+                connection_id: CONN_ID.into(),
+                result_tab_id: "r".into(),
+                relation_oid: meta.relation_oid,
+                changes: vec![RowChange::Delete {
+                    row_id: "d".into(),
+                    identity: identity(&meta, 3, Some(xmin)),
+                }],
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(preview.counts.delete, 1);
+        let (sink, rx) = commit_events();
+        edit_service::commit(
+            &state,
+            &ChangesCommitRequest {
+                change_set_id: preview.change_set_id,
+            },
+            sink,
+        )
+        .await
+        .unwrap();
+        let events = drain(rx).await;
+        assert!(matches!(
+            events.last().unwrap(),
+            ChangesCommitEvent::Completed { .. }
+        ));
+        assert!(read_row(&state, 3).await.is_none());
+
+        // committing the same change set twice is rejected
+        let (sink, _rx) = commit_events();
+        let err = edit_service::commit(
+            &state,
+            &ChangesCommitRequest {
+                change_set_id: "already-gone".into(),
+            },
+            sink,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code, "INVALID_REQUEST");
+    }
 }

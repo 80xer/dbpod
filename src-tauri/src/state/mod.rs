@@ -31,6 +31,8 @@ pub struct AppState {
     pub executions: Arc<Mutex<HashMap<String, Arc<ExecutionState>>>>,
     /// resultTabId -> large-value store (dropped on result_release).
     pub large_values: Mutex<HashMap<String, Arc<LargeValueStore>>>,
+    /// changeSetId -> validated immutable change plan awaiting commit.
+    pub change_sets: Mutex<HashMap<String, crate::application::edit_service::ChangeSet>>,
 }
 
 impl AppState {
@@ -41,6 +43,7 @@ impl AppState {
             workspaces: Mutex::new(HashMap::new()),
             executions: Arc::new(Mutex::new(HashMap::new())),
             large_values: Mutex::new(HashMap::new()),
+            change_sets: Mutex::new(HashMap::new()),
         }
     }
 }

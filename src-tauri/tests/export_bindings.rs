@@ -3,6 +3,7 @@
 //! CI treats an uncommitted diff of the generated file as a failure.
 
 use dbpod_lib::domain::db_value::*;
+use dbpod_lib::domain::editing::*;
 use dbpod_lib::domain::events::*;
 use dbpod_lib::domain::metadata::*;
 use dbpod_lib::domain::profile::*;
@@ -70,6 +71,20 @@ fn export_ipc_types() {
     decl!(TabSnapshot);
     decl!(ConnectionSnapshot);
     decl!(WorkspaceSnapshot);
+    decl!(InsertCellDraft);
+    decl!(PrimaryKeyValue);
+    decl!(RowIdentity);
+    decl!(RowChange);
+    decl!(ChangesPreviewRequest);
+    decl!(ChangeTarget);
+    decl!(ChangeCounts);
+    decl!(StatementPreview);
+    decl!(ChangesPreviewResponse);
+    decl!(ChangesCommitRequest);
+    decl!(ChangesDiscardRequest);
+    decl!(UpdatedRow);
+    decl!(RowConflict);
+    decl!(ChangesCommitEvent);
 
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../src/generated/ipc-types.ts");
     std::fs::create_dir_all(std::path::Path::new(path).parent().unwrap()).unwrap();

@@ -77,6 +77,33 @@ pub async fn query_session_close(
 }
 
 #[tauri::command]
+pub async fn changes_preview(
+    state: State<'_, AppState>,
+    request: crate::domain::editing::ChangesPreviewRequest,
+) -> Result<crate::domain::editing::ChangesPreviewResponse, AppError> {
+    crate::application::edit_service::preview(&state, &request).await
+}
+
+#[tauri::command]
+pub async fn changes_commit(
+    state: State<'_, AppState>,
+    request: crate::domain::editing::ChangesCommitRequest,
+    on_event: Channel<crate::domain::editing::ChangesCommitEvent>,
+) -> Result<(), AppError> {
+    let sink: crate::application::edit_service::CommitSink =
+        Arc::new(move |event| on_event.send(event).is_ok());
+    crate::application::edit_service::commit(&state, &request, sink).await
+}
+
+#[tauri::command]
+pub fn changes_discard(
+    state: State<'_, AppState>,
+    request: crate::domain::editing::ChangesDiscardRequest,
+) -> Result<(), AppError> {
+    crate::application::edit_service::discard(&state, &request)
+}
+
+#[tauri::command]
 pub fn workspace_snapshot_load(
     state: State<'_, AppState>,
 ) -> Result<Option<crate::domain::snapshot::WorkspaceSnapshot>, AppError> {
@@ -126,7 +153,14 @@ pub async fn table_data_execute(
 }
 
 fn channel_sink(
-    executions: Arc<std::sync::Mutex<std::collections::HashMap<String, Arc<crate::infrastructure::postgres::session_actor::ExecutionState>>>>,
+    executions: Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<
+                String,
+                Arc<crate::infrastructure::postgres::session_actor::ExecutionState>,
+            >,
+        >,
+    >,
     on_event: Channel<QueryStreamEvent>,
 ) -> crate::infrastructure::postgres::session_actor::EventSink {
     Arc::new(move |event: QueryStreamEvent| {

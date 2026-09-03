@@ -21,7 +21,12 @@ impl LargeValueStore {
     }
 
     /// Returns (chunk, eof).
-    pub fn read(&self, handle: &str, offset: u64, length: u32) -> Result<(Vec<u8>, bool), AppError> {
+    pub fn read(
+        &self,
+        handle: &str,
+        offset: u64,
+        length: u32,
+    ) -> Result<(Vec<u8>, bool), AppError> {
         if length as usize > MAX_FETCH_BYTES {
             return Err(AppError::invalid_request("length exceeds 1 MiB"));
         }

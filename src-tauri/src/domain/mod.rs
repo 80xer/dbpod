@@ -1,4 +1,5 @@
 pub mod db_value;
+pub mod editing;
 pub mod events;
 pub mod metadata;
 pub mod profile;

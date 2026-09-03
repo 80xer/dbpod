@@ -76,7 +76,11 @@ fn fmt_f32(v: f32) -> String {
     if v.is_nan() {
         "NaN".into()
     } else if v.is_infinite() {
-        if v > 0.0 { "Infinity".into() } else { "-Infinity".into() }
+        if v > 0.0 {
+            "Infinity".into()
+        } else {
+            "-Infinity".into()
+        }
     } else {
         format!("{v}")
     }
@@ -87,18 +91,33 @@ fn fmt_interval(i: &PgInterval) -> String {
     let years = i.months / 12;
     let mons = i.months % 12;
     if years != 0 {
-        parts.push(format!("{years} year{}", if years.abs() == 1 { "" } else { "s" }));
+        parts.push(format!(
+            "{years} year{}",
+            if years.abs() == 1 { "" } else { "s" }
+        ));
     }
     if mons != 0 {
-        parts.push(format!("{mons} mon{}", if mons.abs() == 1 { "" } else { "s" }));
+        parts.push(format!(
+            "{mons} mon{}",
+            if mons.abs() == 1 { "" } else { "s" }
+        ));
     }
     if i.days != 0 {
-        parts.push(format!("{} day{}", i.days, if i.days.abs() == 1 { "" } else { "s" }));
+        parts.push(format!(
+            "{} day{}",
+            i.days,
+            if i.days.abs() == 1 { "" } else { "s" }
+        ));
     }
     if i.microseconds != 0 || parts.is_empty() {
         let neg = i.microseconds < 0;
         let us = i.microseconds.unsigned_abs();
-        let (h, m, s, frac) = (us / 3_600_000_000, us / 60_000_000 % 60, us / 1_000_000 % 60, us % 1_000_000);
+        let (h, m, s, frac) = (
+            us / 3_600_000_000,
+            us / 60_000_000 % 60,
+            us / 1_000_000 % 60,
+            us % 1_000_000,
+        );
         let mut t = format!("{}{:02}:{:02}:{:02}", if neg { "-" } else { "" }, h, m, s);
         if frac != 0 {
             t.push_str(format!(".{frac:06}").trim_end_matches('0'));
@@ -237,7 +256,11 @@ fn decode_array(row: &PgRow, i: usize, elem: &PgTypeInfo) -> Option<DbValue> {
         "NUMERIC" => row
             .try_get::<Vec<Option<sqlx::types::BigDecimal>>, _>(i)
             .ok()
-            .map(|v| array_of(v, oid, |x| DbValue::Decimal { value: x.to_string() })),
+            .map(|v| {
+                array_of(v, oid, |x| DbValue::Decimal {
+                    value: x.to_string(),
+                })
+            }),
         "TEXT" | "VARCHAR" | "BPCHAR" | "CHAR" | "NAME" => row
             .try_get::<Vec<Option<String>>, _>(i)
             .ok()
@@ -245,7 +268,11 @@ fn decode_array(row: &PgRow, i: usize, elem: &PgTypeInfo) -> Option<DbValue> {
         "UUID" => row
             .try_get::<Vec<Option<sqlx::types::Uuid>>, _>(i)
             .ok()
-            .map(|v| array_of(v, oid, |u| DbValue::Uuid { value: u.to_string() })),
+            .map(|v| {
+                array_of(v, oid, |u| DbValue::Uuid {
+                    value: u.to_string(),
+                })
+            }),
         _ => None,
     }
 }
@@ -316,7 +343,10 @@ fn decode_typed(row: &PgRow, i: usize, ti: &PgTypeInfo, large: &LargeValueStore)
 
     let name = ti.name();
     let decoded = match name {
-        "BOOL" => row.try_get::<bool, _>(i).map(|v| DbValue::Boolean { value: v }).ok(),
+        "BOOL" => row
+            .try_get::<bool, _>(i)
+            .map(|v| DbValue::Boolean { value: v })
+            .ok(),
         "INT2" => row.try_get::<i16, _>(i).map(DbValue::integer).ok(),
         "INT4" => row.try_get::<i32, _>(i).map(DbValue::integer).ok(),
         "INT8" => row.try_get::<i64, _>(i).map(DbValue::integer).ok(),
@@ -331,7 +361,9 @@ fn decode_typed(row: &PgRow, i: usize, ti: &PgTypeInfo, large: &LargeValueStore)
             .map(|value| DbValue::Decimal { value })
             .or_else(|| {
                 row.try_get::<sqlx::types::BigDecimal, _>(i)
-                    .map(|v| DbValue::Decimal { value: v.to_string() })
+                    .map(|v| DbValue::Decimal {
+                        value: v.to_string(),
+                    })
                     .ok()
             }),
         "MONEY" => row
@@ -355,7 +387,9 @@ fn decode_typed(row: &PgRow, i: usize, ti: &PgTypeInfo, large: &LargeValueStore)
             .map(DbValue::text),
         "UUID" => row
             .try_get::<sqlx::types::Uuid, _>(i)
-            .map(|v| DbValue::Uuid { value: v.to_string() })
+            .map(|v| DbValue::Uuid {
+                value: v.to_string(),
+            })
             .ok(),
         "DATE" => row
             .try_get::<chrono::NaiveDate, _>(i)
@@ -403,7 +437,11 @@ fn decode_typed(row: &PgRow, i: usize, ti: &PgTypeInfo, large: &LargeValueStore)
             .try_get::<sqlx::types::Json<Box<serde_json::value::RawValue>>, _>(i)
             .map(|v| DbValue::Json {
                 value: v.0.get().to_string(),
-                json_type: if name == "JSONB" { JsonType::Jsonb } else { JsonType::Json },
+                json_type: if name == "JSONB" {
+                    JsonType::Jsonb
+                } else {
+                    JsonType::Json
+                },
             })
             .ok(),
         "BYTEA" => row
@@ -443,8 +481,14 @@ fn decode_typed(row: &PgRow, i: usize, ti: &PgTypeInfo, large: &LargeValueStore)
                 network_type: "macaddr".into(),
             })
             .ok(),
-        "INT4RANGE" => row.try_get::<PgRange<i32>, _>(i).map(|r| range_value(r, name)).ok(),
-        "INT8RANGE" => row.try_get::<PgRange<i64>, _>(i).map(|r| range_value(r, name)).ok(),
+        "INT4RANGE" => row
+            .try_get::<PgRange<i32>, _>(i)
+            .map(|r| range_value(r, name))
+            .ok(),
+        "INT8RANGE" => row
+            .try_get::<PgRange<i64>, _>(i)
+            .map(|r| range_value(r, name))
+            .ok(),
         "NUMRANGE" => row
             .try_get::<PgRange<sqlx::types::BigDecimal>, _>(i)
             .map(|r| range_value(r, name))

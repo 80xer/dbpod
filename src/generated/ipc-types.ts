@@ -119,3 +119,47 @@ export type ConnectionSnapshot = { profileId: string, activeTabIndex: number | n
 
 export type WorkspaceSnapshot = { version: number, connections: Array<ConnectionSnapshot>, };
 
+export type InsertCellDraft = { "mode": "value", value: DbValue, } | { "mode": "null" } | { "mode": "default" };
+
+export type PrimaryKeyValue = { attributeNumber: number, columnName: string, value: DbValue, };
+
+export type RowIdentity = { relationOid: number, primaryKey: Array<PrimaryKeyValue>, xmin: string | null, };
+
+export type RowChange = { "operation": "update", rowId: string, identity: RowIdentity, originalValues: { [key in string]: DbValue }, changes: { [key in string]: DbValue }, } | { "operation": "insert", rowId: string, values: { [key in string]: InsertCellDraft }, } | { "operation": "delete", rowId: string, identity: RowIdentity, };
+
+export type ChangesPreviewRequest = { connectionId: string, resultTabId: string, relationOid: number, changes: Array<RowChange>, };
+
+export type ChangeTarget = { schema: string, table: string, };
+
+export type ChangeCounts = { insert: number, update: number, delete: number, };
+
+export type StatementPreview = { 
+/**
+ * "insert" | "update" | "delete"
+ */
+operation: string, sqlTemplate: string, parameterTypes: Array<string>, rowCount: number, };
+
+export type ChangesPreviewResponse = { changeSetId: string, expiresAt: string, target: ChangeTarget, counts: ChangeCounts, statements: Array<StatementPreview>, warnings: Array<string>, };
+
+export type ChangesCommitRequest = { changeSetId: string, };
+
+export type ChangesDiscardRequest = { changeSetId: string, };
+
+export type UpdatedRow = { rowId: string, 
+/**
+ * "insert" | "update" | "delete"
+ */
+operation: string, 
+/**
+ * Authoritative server-returned values by column name (empty for delete).
+ */
+values: { [key in string]: DbValue }, xmin: string | null, };
+
+export type RowConflict = { rowId: string, reason: string, 
+/**
+ * Latest server values by column name; None when the row no longer exists.
+ */
+current: { [key in string]: DbValue } | null, };
+
+export type ChangesCommitEvent = { "type": "started", totalRows: number, } | { "type": "progress", completedRows: number, } | { "type": "completed", rows: Array<UpdatedRow>, } | { "type": "conflict", conflicts: Array<RowConflict>, } | { "type": "failed", error: AppError, };
+

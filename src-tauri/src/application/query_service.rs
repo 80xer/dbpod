@@ -262,7 +262,11 @@ pub fn result_value_fetch(
 }
 
 pub fn result_release(state: &AppState, req: &ResultReleaseRequest) -> Result<(), AppError> {
-    state.large_values.lock().unwrap().remove(&req.result_tab_id);
+    state
+        .large_values
+        .lock()
+        .unwrap()
+        .remove(&req.result_tab_id);
     Ok(())
 }
 

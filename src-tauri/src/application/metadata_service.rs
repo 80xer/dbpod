@@ -11,7 +11,11 @@ pub fn quote_ident(name: &str) -> String {
 }
 
 /// Runs `f` on the workspace's control connection, connecting lazily.
-async fn with_control<T, F>(state: &AppState, connection_id: &str, f: F) -> Result<T, AppError>
+pub(crate) async fn with_control<T, F>(
+    state: &AppState,
+    connection_id: &str,
+    f: F,
+) -> Result<T, AppError>
 where
     F: for<'c> FnOnce(
         &'c mut PgConnection,
