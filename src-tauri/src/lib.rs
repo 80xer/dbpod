@@ -18,8 +18,8 @@ pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
-            let store = ProfileStore::load(dir).map_err(|e| e.to_string())?;
-            app.manage(AppState::new(store));
+            let store = ProfileStore::load(dir.clone()).map_err(|e| e.to_string())?;
+            app.manage(AppState::new(dir, store));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -41,6 +41,8 @@ pub fn run() {
             commands::metadata_list_objects,
             commands::metadata_get_table,
             commands::table_data_execute,
+            commands::workspace_snapshot_load,
+            commands::workspace_snapshot_save,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

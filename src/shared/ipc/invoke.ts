@@ -26,6 +26,7 @@ import type {
   TableDataExecuteRequest,
   TableMetadata,
   VaultStatus,
+  WorkspaceSnapshot,
 } from "../../generated/ipc-types";
 
 export const ipc = {
@@ -61,4 +62,7 @@ export const ipc = {
     invoke<TableMetadata>("metadata_get_table", { request }),
   tableDataExecute: (request: TableDataExecuteRequest, onEvent: Channel<QueryStreamEvent>) =>
     invoke<ExecutionAccepted>("table_data_execute", { request, onEvent }),
+  workspaceSnapshotLoad: () => invoke<WorkspaceSnapshot | null>("workspace_snapshot_load"),
+  workspaceSnapshotSave: (snapshot: WorkspaceSnapshot) =>
+    invoke<void>("workspace_snapshot_save", { snapshot }),
 };

@@ -1,8 +1,9 @@
 import { useForm } from "@tanstack/react-form";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { openConnections } from "../../entities/connection/openConnections";
+import { preloadSnapshot } from "../../entities/workspace/persistence";
 import type {
   AppError,
   ConnectionTestResult,
@@ -65,6 +66,9 @@ function errText(e: unknown): string {
 export function ConnectionsPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  useEffect(() => {
+    void preloadSnapshot();
+  }, []);
   const profiles = useQuery({ queryKey: ["profiles"], queryFn: ipc.profileList });
   const [testResult, setTestResult] = useState<ConnectionTestResult | null>(null);
   const [message, setMessage] = useState<string>("");

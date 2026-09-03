@@ -28,7 +28,7 @@ fn draft(name: &str) -> ProfileDraft {
 fn profile_save_keeps_secret_out_of_disk() {
     let dir = std::env::temp_dir().join(format!("dbpod-vault-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
-    let state = AppState::new(ProfileStore::load(dir.clone()).unwrap());
+    let state = AppState::new(dir.clone(), ProfileStore::load(dir.clone()).unwrap());
 
     let secret = "s3cr3t-smoke-password";
     let saved = connection_service::profile_save(

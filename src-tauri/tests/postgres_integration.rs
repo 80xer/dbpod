@@ -56,7 +56,7 @@ async fn setup() -> (ContainerAsync<Postgres>, AppState) {
     );
     let dir = std::env::temp_dir().join(format!("dbpod-test-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
-    let state = AppState::new(ProfileStore::load(dir).unwrap());
+    let state = AppState::new(dir.clone(), ProfileStore::load(dir).unwrap());
     state.workspaces.lock().unwrap().insert(
         CONN_ID.into(),
         Workspace {

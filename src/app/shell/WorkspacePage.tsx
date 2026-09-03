@@ -3,6 +3,7 @@ import { useNavigate, useParams } from "@tanstack/react-router";
 import { useEffect, useReducer, useRef, useState } from "react";
 import { openConnections } from "../../entities/connection/openConnections";
 import { resultStore } from "../../entities/result/resultStore";
+import { restoreWorkspace, saveWorkspaceNow, saveWorkspaceSoon } from "../../entities/workspace/persistence";
 import {
   emptyWorkspace,
   sqlDrafts,
@@ -33,10 +34,14 @@ export function WorkspacePage() {
   const [state, dispatch] = useReducer(
     workspaceReducer,
     connectionId,
-    (id) => workspaceStates.get(id) ?? emptyWorkspace(),
+    (id) =>
+      workspaceStates.get(id) ??
+      (profile && restoreWorkspace(profile.id)) ??
+      emptyWorkspace(),
   );
   useEffect(() => {
     workspaceStates.set(connectionId, state);
+    saveWorkspaceSoon();
   }, [connectionId, state]);
 
   useEffect(() => {
@@ -165,6 +170,7 @@ export function WorkspacePage() {
       }
       sqlDrafts.delete(tab.id);
     }
+    await saveWorkspaceNow();
     await ipc.connectionClose({ connectionId }).catch(() => undefined);
     openConnections.delete(connectionId);
     workspaceStates.delete(connectionId);
@@ -304,7 +310,10 @@ export function WorkspacePage() {
               onViewReady={(v) => {
                 viewRef.current = v;
               }}
-              onDocChanged={(doc) => sqlDrafts.set(activeTab.id, doc)}
+              onDocChanged={(doc) => {
+                sqlDrafts.set(activeTab.id, doc);
+                saveWorkspaceSoon();
+              }}
             />
           </div>
 

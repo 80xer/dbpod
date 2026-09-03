@@ -113,3 +113,9 @@ export type TableDataExecuteRequest = { connectionId: string, queryTabId: string
  */
 sortAttribute: number | null, sortDescending: boolean, limit: number, offset: number, };
 
+export type TabSnapshot = { title: string, sql: string, };
+
+export type ConnectionSnapshot = { profileId: string, activeTabIndex: number | null, tabs: Array<TabSnapshot>, };
+
+export type WorkspaceSnapshot = { version: number, connections: Array<ConnectionSnapshot>, };
+

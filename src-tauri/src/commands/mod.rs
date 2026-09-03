@@ -77,6 +77,21 @@ pub async fn query_session_close(
 }
 
 #[tauri::command]
+pub fn workspace_snapshot_load(
+    state: State<'_, AppState>,
+) -> Result<Option<crate::domain::snapshot::WorkspaceSnapshot>, AppError> {
+    crate::infrastructure::persistence::snapshot::load(&state.data_dir)
+}
+
+#[tauri::command]
+pub fn workspace_snapshot_save(
+    state: State<'_, AppState>,
+    snapshot: crate::domain::snapshot::WorkspaceSnapshot,
+) -> Result<(), AppError> {
+    crate::infrastructure::persistence::snapshot::save(&state.data_dir, &snapshot)
+}
+
+#[tauri::command]
 pub async fn metadata_list_schemas(
     state: State<'_, AppState>,
     request: crate::domain::metadata::MetadataListSchemasRequest,

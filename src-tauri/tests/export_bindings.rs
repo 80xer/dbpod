@@ -6,6 +6,7 @@ use dbpod_lib::domain::db_value::*;
 use dbpod_lib::domain::events::*;
 use dbpod_lib::domain::metadata::*;
 use dbpod_lib::domain::profile::*;
+use dbpod_lib::domain::snapshot::*;
 use dbpod_lib::error::AppError;
 use ts_rs::TS;
 
@@ -66,6 +67,9 @@ fn export_ipc_types() {
     decl!(TableColumnMetadata);
     decl!(TableMetadata);
     decl!(TableDataExecuteRequest);
+    decl!(TabSnapshot);
+    decl!(ConnectionSnapshot);
+    decl!(WorkspaceSnapshot);
 
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../src/generated/ipc-types.ts");
     std::fs::create_dir_all(std::path::Path::new(path).parent().unwrap()).unwrap();

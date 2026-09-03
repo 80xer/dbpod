@@ -22,6 +22,7 @@ pub struct Workspace {
 }
 
 pub struct AppState {
+    pub data_dir: std::path::PathBuf,
     pub profiles: Mutex<ProfileStore>,
     /// connectionId -> Workspace
     pub workspaces: Mutex<HashMap<String, Workspace>>,
@@ -33,8 +34,9 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(profiles: ProfileStore) -> Self {
+    pub fn new(data_dir: std::path::PathBuf, profiles: ProfileStore) -> Self {
         Self {
+            data_dir,
             profiles: Mutex::new(profiles),
             workspaces: Mutex::new(HashMap::new()),
             executions: Arc::new(Mutex::new(HashMap::new())),
