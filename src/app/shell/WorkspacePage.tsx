@@ -11,7 +11,9 @@ import {
   workspaceStates,
   type QueryTabState,
 } from "../../entities/workspace/workspaceStore";
+import { historyStore } from "../../entities/query/historyStore";
 import { ObjectSidebar } from "../../features/object-explorer/ObjectSidebar";
+import { HistoryPanel } from "../../features/query-history/HistoryPanel";
 import { TableDataView } from "../../features/object-explorer/TableDataView";
 import { SqlEditor } from "../../features/query-editor/SqlEditor";
 import {
@@ -54,6 +56,7 @@ export function WorkspacePage() {
 
   const [notice, setNotice] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const viewRef = useRef<EditorView | null>(null);
 
   const activeTab = state.tabs.find((t) => t.id === state.activeTabId);
@@ -137,10 +140,18 @@ export function WorkspacePage() {
         executionId: accepted.executionId,
         sessionId: accepted.sessionId,
       });
+      const startedAt = new Date().toISOString();
       const unsubscribe = resultStore.subscribe(resultTabId, () => {
         const s = resultStore.getSnapshot(resultTabId);
         if (s.status !== "running" && s.status !== "idle") {
           dispatch({ type: "EXECUTION_ENDED", tabId: tab.id, resultTabId });
+          historyStore.record({
+            connectionId,
+            sql,
+            startedAt,
+            durationMs: s.durationMs,
+            status: s.status as "completed" | "failed" | "cancelled",
+          });
           unsubscribe();
         }
       });
@@ -262,6 +273,15 @@ export function WorkspacePage() {
             title="Esc 또는 Cmd/Ctrl+."
           >
             ■ 중지
+          </button>
+          <button
+            type="button"
+            onClick={() => setHistoryOpen(!historyOpen)}
+            aria-pressed={historyOpen}
+            className="rounded border border-gray-300 px-2 py-1 text-xs text-gray-600 hover:bg-gray-50"
+            title="쿼리 이력"
+          >
+            🕘
           </button>
           <button
             type="button"
@@ -409,6 +429,17 @@ export function WorkspacePage() {
         </>
       )}
         </div>
+        {historyOpen && (
+          <HistoryPanel
+            connectionId={connectionId}
+            onClose={() => setHistoryOpen(false)}
+            onReopen={(sql) => {
+              const tabId = crypto.randomUUID();
+              sqlDrafts.set(tabId, sql);
+              dispatch({ type: "TAB_ADDED", tabId });
+            }}
+          />
+        )}
       </div>
     </div>
   );
