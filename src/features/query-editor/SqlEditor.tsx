@@ -7,17 +7,30 @@ import { useEffect, useRef } from "react";
 type Props = {
   initialSql: string;
   onRun: () => void;
+  onRunNewResult: () => void;
   onCancel: () => void;
   onViewReady: (view: EditorView) => void;
+  onDocChanged?: (doc: string) => void;
 };
 
-export function SqlEditor({ initialSql, onRun, onCancel, onViewReady }: Props) {
+export function SqlEditor({
+  initialSql,
+  onRun,
+  onRunNewResult,
+  onCancel,
+  onViewReady,
+  onDocChanged,
+}: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   // Latest callbacks without re-creating the editor.
   const runRef = useRef(onRun);
+  const runNewRef = useRef(onRunNewResult);
   const cancelRef = useRef(onCancel);
+  const docChangedRef = useRef(onDocChanged);
   runRef.current = onRun;
+  runNewRef.current = onRunNewResult;
   cancelRef.current = onCancel;
+  docChangedRef.current = onDocChanged;
 
   useEffect(() => {
     if (!hostRef.current) return;
@@ -28,8 +41,18 @@ export function SqlEditor({ initialSql, onRun, onCancel, onViewReady }: Props) {
         extensions: [
           basicSetup,
           sql({ dialect: PostgreSQL }),
+          EditorView.updateListener.of((u) => {
+            if (u.docChanged) docChangedRef.current?.(u.state.doc.toString());
+          }),
           Prec.highest(
             keymap.of([
+              {
+                key: "Mod-Shift-Enter",
+                run: () => {
+                  runNewRef.current();
+                  return true;
+                },
+              },
               {
                 key: "Mod-Enter",
                 run: () => {
