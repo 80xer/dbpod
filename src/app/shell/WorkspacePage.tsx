@@ -15,7 +15,7 @@ import { ObjectSidebar } from "../../features/object-explorer/ObjectSidebar";
 import { TableDataView } from "../../features/object-explorer/TableDataView";
 import { SqlEditor } from "../../features/query-editor/SqlEditor";
 import { statementAt } from "../../features/query-editor/statementSplitter";
-import { ResultGrid } from "../../features/result-grid/ResultGrid";
+import { QueryResultPane } from "../../features/result-grid/QueryResultPane";
 import { ipc } from "../../shared/ipc/invoke";
 import { runQuery } from "../../shared/ipc/queryChannel";
 
@@ -295,7 +295,12 @@ export function WorkspacePage() {
       {notice && <div className="bg-amber-50 px-3 py-1 text-xs text-amber-800">{notice}</div>}
 
       {activeTab && activeTab.kind === "table-data" && (
-        <TableDataView connectionId={connectionId} tab={activeTab} dispatch={dispatch} />
+        <TableDataView
+          connectionId={connectionId}
+          tab={activeTab}
+          dispatch={dispatch}
+          readOnly={profile.readOnly}
+        />
       )}
 
       {activeTab && activeTab.kind === "query" && (
@@ -370,7 +375,11 @@ export function WorkspacePage() {
 
           <div className="min-h-0 flex-1 basis-3/5">
             {activeTab.activeResultTabId ? (
-              <ResultGrid resultTabId={activeTab.activeResultTabId} />
+              <QueryResultPane
+                connectionId={connectionId}
+                resultTabId={activeTab.activeResultTabId}
+                readOnly={profile.readOnly}
+              />
             ) : (
               <div className="flex h-full items-center justify-center text-sm text-gray-400">
                 Cmd/Ctrl+Enter로 쿼리를 실행하세요

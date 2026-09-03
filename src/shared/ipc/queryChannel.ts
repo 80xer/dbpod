@@ -65,8 +65,9 @@ function resultChannel(resultTabId: string): Channel<QueryStreamEvent> {
 async function start(
   resultTabId: string,
   invokeFn: (channel: Channel<QueryStreamEvent>) => Promise<ExecutionAccepted>,
+  executedSql?: string,
 ): Promise<ExecutionAccepted> {
-  resultStore.create(resultTabId);
+  resultStore.create(resultTabId, executedSql);
   try {
     return await invokeFn(resultChannel(resultTabId));
   } catch (err) {
@@ -76,7 +77,7 @@ async function start(
 }
 
 export function runQuery(request: QueryExecuteRequest): Promise<ExecutionAccepted> {
-  return start(request.resultTabId, (ch) => ipc.queryExecute(request, ch));
+  return start(request.resultTabId, (ch) => ipc.queryExecute(request, ch), request.sql);
 }
 
 export function runTableData(request: TableDataExecuteRequest): Promise<ExecutionAccepted> {

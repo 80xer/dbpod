@@ -9,6 +9,7 @@ export type ResultStatus = "idle" | "running" | "completed" | "failed" | "cancel
 
 export type ResultSnapshot = {
   executionId?: string;
+  executedSql?: string;
   columns: ColumnMeta[];
   /** Mutated in place; the snapshot object identity changes on every update. */
   rows: DbValue[][];
@@ -34,10 +35,32 @@ class ResultStore {
   private nextSequence = new Map<string, number>();
   private listeners = new Map<string, Set<() => void>>();
 
-  create(resultTabId: string): void {
-    this.states.set(resultTabId, { columns: [], rows: [], status: "running" });
+  create(resultTabId: string, executedSql?: string): void {
+    this.states.set(resultTabId, { columns: [], rows: [], status: "running", executedSql });
     this.nextSequence.set(resultTabId, 0);
     this.emit(resultTabId);
+  }
+
+  /** Applies authoritative server values after a successful commit. */
+  replaceRow(resultTabId: string, rowIndex: number, row: DbValue[]): void {
+    this.update(resultTabId, (s) => {
+      if (rowIndex >= 0 && rowIndex < s.rows.length) s.rows[rowIndex] = row;
+      return { ...s };
+    });
+  }
+
+  removeRows(resultTabId: string, rowIndexes: number[]): void {
+    this.update(resultTabId, (s) => {
+      for (const idx of [...rowIndexes].sort((a, b) => b - a)) s.rows.splice(idx, 1);
+      return { ...s, rowCount: s.rows.length };
+    });
+  }
+
+  pushRows(resultTabId: string, rows: DbValue[][]): void {
+    this.update(resultTabId, (s) => {
+      s.rows.push(...rows);
+      return { ...s, rowCount: s.rows.length };
+    });
   }
 
   setStarted(resultTabId: string, executionId: string): void {

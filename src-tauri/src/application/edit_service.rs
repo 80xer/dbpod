@@ -588,7 +588,16 @@ pub async fn commit(
                             .await
                             .ok()
                             .flatten()
-                            .map(|row| row_to_updated(&row, &plan.row_id, "current").values)
+                            .map(|row| {
+                                let u = row_to_updated(&row, &plan.row_id, "current");
+                                let mut values = u.values;
+                                // carry the fresh row version so the client can retry
+                                if let Some(x) = u.xmin {
+                                    values
+                                        .insert("__dbpod_xmin".into(), DbValue::Text { value: x });
+                                }
+                                values
+                            })
                         } else {
                             None
                         };

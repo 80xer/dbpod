@@ -1,6 +1,9 @@
 import { useQuery } from "@tanstack/react-query";
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
+import { editStore } from "../../entities/result/editStore";
 import { resultStore } from "../../entities/result/resultStore";
+import { tableDataEditability, type Editability } from "../data-editing/editability";
+import { EditBar } from "../data-editing/EditBar";
 import {
   tableDataViews,
   type QueryTabState,
@@ -17,9 +20,10 @@ type Props = {
   connectionId: string;
   tab: QueryTabState;
   dispatch: (a: WorkspaceAction) => void;
+  readOnly: boolean;
 };
 
-export function TableDataView({ connectionId, tab, dispatch }: Props) {
+export function TableDataView({ connectionId, tab, dispatch, readOnly }: Props) {
   const target = tab.tableData;
   const resultTabId = `${tab.id}:data`;
   const [view, setView] = useState<ViewState>(
@@ -42,6 +46,10 @@ export function TableDataView({ connectionId, tab, dispatch }: Props) {
   const fetchPage = useCallback(
     async (next: ViewState) => {
       if (!target) return;
+      if (editStore.getSnapshot(resultTabId).pendingCount > 0) {
+        if (!window.confirm("저장하지 않은 변경이 있습니다. 버리고 새로 조회할까요?")) return;
+      }
+      editStore.clear(resultTabId);
       tableDataViews.set(tab.id, next);
       setView(next);
       try {
@@ -83,6 +91,11 @@ export function TableDataView({ connectionId, tab, dispatch }: Props) {
   }, []);
 
   if (!target) return null;
+
+  const editability: Editability | null =
+    meta.data && snapshot.columns.length > 0
+      ? tableDataEditability(snapshot.columns, meta.data, readOnly)
+      : null;
 
   const sortColumnName = meta.data?.columns.find(
     (c) => c.attributeNumber === view.sortAttribute,
@@ -143,6 +156,9 @@ export function TableDataView({ connectionId, tab, dispatch }: Props) {
           </button>
         </div>
       </div>
+      {editability && (
+        <EditBar connectionId={connectionId} resultTabId={resultTabId} editability={editability} />
+      )}
       <div className="min-h-0 flex-1">
         <ResultGrid
           resultTabId={resultTabId}
@@ -151,6 +167,11 @@ export function TableDataView({ connectionId, tab, dispatch }: Props) {
             sortColumnName ? { column: sortColumnName, descending: view.sortDescending } : undefined
           }
           onHeaderClick={onHeaderClick}
+          edit={
+            editability?.editable
+              ? { editableColumns: editability.editableColumns }
+              : undefined
+          }
         />
       </div>
     </div>
