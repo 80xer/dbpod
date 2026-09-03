@@ -37,6 +37,10 @@ pub fn run() {
             commands::query_cancel,
             commands::result_value_fetch,
             commands::result_release,
+            commands::metadata_list_schemas,
+            commands::metadata_list_objects,
+            commands::metadata_get_table,
+            commands::table_data_execute,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

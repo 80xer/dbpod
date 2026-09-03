@@ -5,9 +5,17 @@ export type ResultTabState = {
   isRunning: boolean;
 };
 
+export type TableDataTarget = {
+  relationOid: number;
+  schema: string;
+  name: string;
+};
+
 export type QueryTabState = {
   id: string;
   title: string;
+  kind: "query" | "table-data";
+  tableData?: TableDataTarget;
   resultTabs: ResultTabState[];
   activeResultTabId?: string;
   runningExecutionId?: string;
@@ -22,7 +30,7 @@ export type WorkspaceState = {
 };
 
 export type WorkspaceAction =
-  | { type: "TAB_ADDED"; tabId: string }
+  | { type: "TAB_ADDED"; tabId: string; title?: string; tableData?: TableDataTarget }
   | { type: "TAB_CLOSED"; tabId: string }
   | { type: "TAB_RENAMED"; tabId: string; title: string }
   | { type: "TAB_ACTIVATED"; tabId: string }
@@ -61,14 +69,16 @@ export function workspaceReducer(state: WorkspaceState, action: WorkspaceAction)
     case "TAB_ADDED": {
       const tab: QueryTabState = {
         id: action.tabId,
-        title: `Query ${state.nextTabNumber}`,
+        title: action.title ?? `Query ${state.nextTabNumber}`,
+        kind: action.tableData ? "table-data" : "query",
+        tableData: action.tableData,
         resultTabs: [],
       };
       return {
         ...state,
         tabs: [...state.tabs, tab],
         activeTabId: tab.id,
-        nextTabNumber: state.nextTabNumber + 1,
+        nextTabNumber: action.title ? state.nextTabNumber : state.nextTabNumber + 1,
       };
     }
     case "TAB_CLOSED": {
@@ -157,3 +167,12 @@ export const workspaceStates = new Map<string, WorkspaceState>();
 
 /** SQL drafts live outside React state — CodeMirror is the source of truth. */
 export const sqlDrafts = new Map<string, string>();
+
+export type TableDataView = {
+  offset: number;
+  sortAttribute: number | null;
+  sortDescending: boolean;
+};
+
+/** Table Data paging/sort state per tab (memory only). */
+export const tableDataViews = new Map<string, TableDataView>();

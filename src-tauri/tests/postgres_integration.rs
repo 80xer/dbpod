@@ -15,7 +15,7 @@ use dbpod_lib::infrastructure::postgres::transport::build_connect_options;
 use dbpod_lib::state::{AppState, Workspace};
 use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
-use testcontainers_modules::testcontainers::ContainerAsync;
+use testcontainers_modules::testcontainers::{ContainerAsync, ImageExt};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::time::{timeout, Duration};
 
@@ -40,7 +40,11 @@ fn test_profile() -> ConnectionProfile {
 }
 
 async fn setup() -> (ContainerAsync<Postgres>, AppState) {
-    let node = Postgres::default().start().await.expect("start postgres");
+    let node = Postgres::default()
+        .with_tag("17-alpine")
+        .start()
+        .await
+        .expect("start postgres");
     let port = node.get_host_port_ipv4(5432).await.expect("mapped port");
     let opts = build_connect_options(
         "127.0.0.1",
@@ -625,3 +629,133 @@ async fn session_close_rolls_back_and_kills_backend() {
 }
 
 use sqlx::Connection;
+
+#[tokio::test]
+async fn metadata_and_table_data() {
+    use dbpod_lib::application::metadata_service;
+    use dbpod_lib::domain::metadata::*;
+
+    let (_node, state) = setup().await;
+
+    // fixtures via the query path
+    for sql in [
+        "CREATE TABLE public.items (id serial PRIMARY KEY, name text NOT NULL, note text)",
+        "INSERT INTO public.items (name) SELECT 'n' || g FROM generate_series(1, 25) g",
+        "CREATE TABLE public.\"we\"\"ird\" (\"select\" int PRIMARY KEY, \"order by\" text)",
+        "INSERT INTO public.\"we\"\"ird\" VALUES (1, 'x'), (2, 'y')",
+    ] {
+        let (sink, mut rx) = sink_channel();
+        let accepted = query_service::execute(&state, req("t-meta", sql, 10), sink).unwrap();
+        let events = collect_events(&state, &accepted.execution_id, &mut rx).await;
+        assert!(
+            matches!(events.last().unwrap(), QueryStreamEvent::Completed { .. }),
+            "fixture failed: {sql}"
+        );
+    }
+
+    let schemas = metadata_service::list_schemas(
+        &state,
+        &MetadataListSchemasRequest {
+            connection_id: CONN_ID.into(),
+            include_system: false,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(schemas.iter().any(|s| s.name == "public"));
+    assert!(!schemas.iter().any(|s| s.name == "pg_catalog"));
+    let public_oid = schemas.iter().find(|s| s.name == "public").unwrap().oid;
+
+    let objects = metadata_service::list_objects(
+        &state,
+        &MetadataListObjectsRequest {
+            connection_id: CONN_ID.into(),
+            schema_oids: vec![public_oid],
+            kinds: vec![ObjectKind::Table],
+        },
+    )
+    .await
+    .unwrap();
+    let items = objects.iter().find(|o| o.name == "items").expect("items table");
+    assert_eq!(items.can_select, Some(true));
+    assert!(objects.iter().any(|o| o.name == "we\"ird"));
+
+    let meta = metadata_service::get_table(
+        &state,
+        &MetadataGetTableRequest {
+            connection_id: CONN_ID.into(),
+            relation_oid: items.oid,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(meta.schema, "public");
+    assert_eq!(meta.kind, "table");
+    assert_eq!(meta.primary_key, vec![1]);
+    assert_eq!(meta.columns.len(), 3);
+    assert!(meta.columns[0].is_primary_key);
+    assert!(!meta.columns[1].nullable);
+    assert!(meta.columns[0].default_expr.as_deref().unwrap_or("").contains("nextval"));
+
+    // table data: sorted desc by id, limit 2 offset 1 -> ids 24, 23; xmin rides along
+    let (sink, mut rx) = sink_channel();
+    let accepted = query_service::table_data_execute(
+        &state,
+        TableDataExecuteRequest {
+            connection_id: CONN_ID.into(),
+            query_tab_id: "t-meta".into(),
+            result_tab_id: "t-meta-data".into(),
+            relation_oid: items.oid,
+            sort_attribute: Some(1),
+            sort_descending: true,
+            limit: 2,
+            offset: 1,
+        },
+        sink,
+    )
+    .await
+    .unwrap();
+    let events = collect_events(&state, &accepted.execution_id, &mut rx).await;
+    let columns = events
+        .iter()
+        .find_map(|e| match e {
+            QueryStreamEvent::Columns { columns, .. } => Some(columns.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(columns[0].name, "__dbpod_xmin");
+    assert_eq!(columns[1].name, "id");
+    let rows: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            QueryStreamEvent::Rows { rows, .. } => Some(rows.clone()),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    assert_eq!(rows.len(), 2);
+    assert!(matches!(&rows[0][1], DbValue::Integer { value } if value == "24"));
+    assert!(matches!(&rows[1][1], DbValue::Integer { value } if value == "23"));
+
+    // special-character identifiers stay safe
+    let weird = objects.iter().find(|o| o.name == "we\"ird").unwrap();
+    let (sink, mut rx) = sink_channel();
+    let accepted = query_service::table_data_execute(
+        &state,
+        TableDataExecuteRequest {
+            connection_id: CONN_ID.into(),
+            query_tab_id: "t-meta".into(),
+            result_tab_id: "t-meta-data2".into(),
+            relation_oid: weird.oid,
+            sort_attribute: Some(2),
+            sort_descending: false,
+            limit: 10,
+            offset: 0,
+        },
+        sink,
+    )
+    .await
+    .unwrap();
+    let events = collect_events(&state, &accepted.execution_id, &mut rx).await;
+    assert!(matches!(events.last().unwrap(), QueryStreamEvent::Completed { row_count: 2, .. }));
+}

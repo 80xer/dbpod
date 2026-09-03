@@ -9,7 +9,8 @@ function formatBytes(n: number): string {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-export function cellText(v: DbValue): string {
+export function cellText(v: DbValue | undefined): string {
+  if (!v) return "";
   switch (v.kind) {
     case "null":
       return "NULL";
@@ -26,7 +27,8 @@ export function cellText(v: DbValue): string {
   }
 }
 
-function cellClass(v: DbValue): string {
+function cellClass(v: DbValue | undefined): string {
+  if (!v) return "";
   switch (v.kind) {
     case "null":
       return "text-gray-400 italic";
@@ -43,13 +45,24 @@ function cellClass(v: DbValue): string {
   }
 }
 
+type ResultGridProps = {
+  resultTabId: string;
+  /** Column names to hide (e.g. the Table Data identity column). */
+  hiddenColumns?: string[];
+  sort?: { column: string; descending: boolean };
+  onHeaderClick?: (columnName: string) => void;
+};
+
 // ponytail: header + virtualized rows straight from the ResultStore; adopt the
-// TanStack Table column/row model when sorting/pinning lands in Milestone B.
-export function ResultGrid({ resultTabId }: { resultTabId: string }) {
+// TanStack Table column/row model when client sorting/pinning lands.
+export function ResultGrid({ resultTabId, hiddenColumns, sort, onHeaderClick }: ResultGridProps) {
   const snapshot = useSyncExternalStore(
     useCallback((cb: () => void) => resultStore.subscribe(resultTabId, cb), [resultTabId]),
     () => resultStore.getSnapshot(resultTabId),
   );
+  const columns = hiddenColumns?.length
+    ? snapshot.columns.filter((c) => !hiddenColumns.includes(c.name))
+    : snapshot.columns;
   const parentRef = useRef<HTMLDivElement>(null);
   const virtualizer = useVirtualizer({
     count: snapshot.rows.length,
@@ -83,20 +96,33 @@ export function ResultGrid({ resultTabId }: { resultTabId: string }) {
         role="grid"
         aria-rowcount={snapshot.rows.length}
       >
-        {snapshot.columns.length > 0 && (
+        {columns.length > 0 && (
           <table className="border-separate border-spacing-0 text-[13px]">
             <thead className="sticky top-0 z-10">
               <tr role="row">
                 <th className="border-b border-r border-gray-200 bg-gray-50 px-2 py-1 text-right font-normal text-gray-400">
                   #
                 </th>
-                {snapshot.columns.map((c) => (
+                {columns.map((c) => (
                   <th
                     key={c.index}
-                    className="max-w-[320px] truncate border-b border-r border-gray-200 bg-gray-50 px-2 py-1 text-left font-medium"
+                    className={`max-w-[320px] truncate border-b border-r border-gray-200 bg-gray-50 px-2 py-1 text-left font-medium ${
+                      onHeaderClick ? "cursor-pointer select-none hover:bg-gray-100" : ""
+                    }`}
                     title={`${c.name} (${c.pgTypeName.toLowerCase()})`}
+                    aria-sort={
+                      sort?.column === c.name
+                        ? sort.descending
+                          ? "descending"
+                          : "ascending"
+                        : undefined
+                    }
+                    onClick={onHeaderClick ? () => onHeaderClick(c.name) : undefined}
                   >
                     {c.name}
+                    {sort?.column === c.name && (
+                      <span className="ml-0.5 text-blue-600">{sort.descending ? "▼" : "▲"}</span>
+                    )}
                     <span className="ml-1 font-normal text-gray-400">{c.pgTypeName.toLowerCase()}</span>
                   </th>
                 ))}
@@ -123,15 +149,18 @@ export function ResultGrid({ resultTabId }: { resultTabId: string }) {
                     <td className="w-14 shrink-0 border-b border-r border-gray-100 px-2 py-1 text-right text-gray-400">
                       {vi.index + 1}
                     </td>
-                    {row.map((cell, ci) => (
-                      <td
-                        key={ci}
-                        className={`w-[200px] shrink-0 truncate border-b border-r border-gray-100 px-2 py-1 ${cellClass(cell)}`}
-                        title={cellText(cell)}
-                      >
-                        {cellText(cell)}
-                      </td>
-                    ))}
+                    {columns.map((c) => {
+                      const cell = row[c.index];
+                      return (
+                        <td
+                          key={c.index}
+                          className={`w-[200px] shrink-0 truncate border-b border-r border-gray-100 px-2 py-1 ${cellClass(cell)}`}
+                          title={cellText(cell)}
+                        >
+                          {cellText(cell)}
+                        </td>
+                      );
+                    })}
                   </tr>
                 );
               })}

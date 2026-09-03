@@ -8,7 +8,11 @@ import type {
   ConnectionProfileSaveResponse,
   ConnectionTestRequest,
   ConnectionTestResult,
+  DatabaseObjectSummary,
   ExecutionAccepted,
+  MetadataGetTableRequest,
+  MetadataListObjectsRequest,
+  MetadataListSchemasRequest,
   QueryAckChunkRequest,
   QueryCancelRequest,
   QueryCancelResponse,
@@ -18,6 +22,9 @@ import type {
   ResultReleaseRequest,
   ResultValueFetchRequest,
   ResultValueFetchResponse,
+  SchemaInfo,
+  TableDataExecuteRequest,
+  TableMetadata,
   VaultStatus,
 } from "../../generated/ipc-types";
 
@@ -46,4 +53,12 @@ export const ipc = {
     invoke<ResultValueFetchResponse>("result_value_fetch", { request }),
   resultRelease: (request: ResultReleaseRequest) =>
     invoke<void>("result_release", { request }),
+  metadataListSchemas: (request: MetadataListSchemasRequest) =>
+    invoke<SchemaInfo[]>("metadata_list_schemas", { request }),
+  metadataListObjects: (request: MetadataListObjectsRequest) =>
+    invoke<DatabaseObjectSummary[]>("metadata_list_objects", { request }),
+  metadataGetTable: (request: MetadataGetTableRequest) =>
+    invoke<TableMetadata>("metadata_get_table", { request }),
+  tableDataExecute: (request: TableDataExecuteRequest, onEvent: Channel<QueryStreamEvent>) =>
+    invoke<ExecutionAccepted>("table_data_execute", { request, onEvent }),
 };

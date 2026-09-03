@@ -181,6 +181,67 @@ pub fn execute(
     Ok(accepted)
 }
 
+/// Table Data browsing: SQL is assembled in Rust from catalog-validated
+/// identifiers only; xmin rides along as row identity for editing.
+pub async fn table_data_execute(
+    state: &AppState,
+    req: crate::domain::metadata::TableDataExecuteRequest,
+    sink: EventSink,
+) -> Result<ExecutionAccepted, AppError> {
+    use crate::application::metadata_service::{self, quote_ident};
+
+    if req.limit == 0 || req.limit > 10_000 {
+        return Err(AppError::invalid_request("limit out of range"));
+    }
+    let meta = metadata_service::get_table(
+        state,
+        &crate::domain::metadata::MetadataGetTableRequest {
+            connection_id: req.connection_id.clone(),
+            relation_oid: req.relation_oid,
+        },
+    )
+    .await?;
+
+    let mut order = String::new();
+    if let Some(att) = req.sort_attribute {
+        let col = meta
+            .columns
+            .iter()
+            .find(|c| c.attribute_number == att)
+            .ok_or_else(|| AppError::invalid_request("unknown sort column"))?;
+        order = format!(
+            " ORDER BY {} {}",
+            quote_ident(&col.name),
+            if req.sort_descending { "DESC" } else { "ASC" }
+        );
+    }
+    let is_base_table = meta.kind == "table" || meta.kind == "partitioned-table";
+    let xmin_sel = if is_base_table {
+        "t.xmin::text AS __dbpod_xmin, "
+    } else {
+        ""
+    };
+    let sql = format!(
+        "SELECT {xmin_sel}t.* FROM {}.{} t{order} LIMIT {} OFFSET {}",
+        quote_ident(&meta.schema),
+        quote_ident(&meta.name),
+        req.limit,
+        req.offset
+    );
+    execute(
+        state,
+        QueryExecuteRequest {
+            connection_id: req.connection_id,
+            query_tab_id: req.query_tab_id,
+            result_tab_id: req.result_tab_id,
+            sql,
+            max_rows: req.limit,
+            timeout_ms: 60_000,
+        },
+        sink,
+    )
+}
+
 pub fn result_value_fetch(
     state: &AppState,
     req: &ResultValueFetchRequest,

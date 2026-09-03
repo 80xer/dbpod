@@ -10,6 +10,8 @@ import {
   workspaceStates,
   type QueryTabState,
 } from "../../entities/workspace/workspaceStore";
+import { ObjectSidebar } from "../../features/object-explorer/ObjectSidebar";
+import { TableDataView } from "../../features/object-explorer/TableDataView";
 import { SqlEditor } from "../../features/query-editor/SqlEditor";
 import { statementAt } from "../../features/query-editor/statementSplitter";
 import { ResultGrid } from "../../features/result-grid/ResultGrid";
@@ -42,6 +44,7 @@ export function WorkspacePage() {
   }, [state.tabs.length]);
 
   const [notice, setNotice] = useState("");
+  const [sidebarOpen, setSidebarOpen] = useState(true);
   const viewRef = useRef<EditorView | null>(null);
 
   const activeTab = state.tabs.find((t) => t.id === state.activeTabId);
@@ -78,7 +81,7 @@ export function WorkspacePage() {
 
   const run = async (mode: "replace" | "new-result") => {
     const tab = activeTab;
-    if (!tab || tab.runningExecutionId) return;
+    if (!tab || tab.kind !== "query" || tab.runningExecutionId) return;
     const sql = pickSql();
     if (!sql) {
       setNotice("실행할 SQL이 없습니다.");
@@ -173,9 +176,29 @@ export function WorkspacePage() {
     if (title?.trim()) dispatch({ type: "TAB_RENAMED", tabId: tab.id, title: title.trim() });
   };
 
+  const openTable = (o: { oid: number; schema: string; name: string }) => {
+    dispatch({
+      type: "TAB_ADDED",
+      tabId: crypto.randomUUID(),
+      title: o.name,
+      tableData: { relationOid: o.oid, schema: o.schema, name: o.name },
+    });
+  };
+
+  const isQueryTab = activeTab?.kind === "query";
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex shrink-0 items-center gap-2 border-b border-gray-200 px-3 py-1.5">
+        <button
+          type="button"
+          onClick={() => setSidebarOpen(!sidebarOpen)}
+          aria-label="객체 탐색기 토글"
+          aria-expanded={sidebarOpen}
+          className="rounded border border-gray-300 px-1.5 py-0.5 text-xs text-gray-600 hover:bg-gray-50"
+        >
+          ☰
+        </button>
         <span className="text-sm font-medium">{profile.name}</span>
         <span className="hidden text-xs text-gray-500 md:inline">
           {profile.username}@{profile.host}/{profile.database}
@@ -190,7 +213,7 @@ export function WorkspacePage() {
           <button
             type="button"
             onClick={() => void run("replace")}
-            disabled={running}
+            disabled={running || !isQueryTab}
             className="rounded bg-blue-600 px-3 py-1 text-xs text-white hover:bg-blue-700 disabled:opacity-50"
             title="Cmd/Ctrl+Enter — 현재 결과 교체"
           >
@@ -199,7 +222,7 @@ export function WorkspacePage() {
           <button
             type="button"
             onClick={() => void run("new-result")}
-            disabled={running}
+            disabled={running || !isQueryTab}
             className="rounded border border-blue-600 px-2 py-1 text-xs text-blue-700 hover:bg-blue-50 disabled:opacity-40"
             title="Cmd/Ctrl+Shift+Enter — 새 Result Tab에서 실행"
           >
@@ -224,6 +247,9 @@ export function WorkspacePage() {
         </div>
       </div>
 
+      <div className="flex min-h-0 flex-1">
+        {sidebarOpen && <ObjectSidebar connectionId={connectionId} onOpenTable={openTable} />}
+        <div className="flex min-w-0 flex-1 flex-col">
       {/* Work Tab bar */}
       <div className="flex shrink-0 items-end gap-1 border-b border-gray-300 bg-gray-50 px-2 pt-1" role="tablist">
         {state.tabs.map((t) => (
@@ -262,7 +288,11 @@ export function WorkspacePage() {
 
       {notice && <div className="bg-amber-50 px-3 py-1 text-xs text-amber-800">{notice}</div>}
 
-      {activeTab && (
+      {activeTab && activeTab.kind === "table-data" && (
+        <TableDataView connectionId={connectionId} tab={activeTab} dispatch={dispatch} />
+      )}
+
+      {activeTab && activeTab.kind === "query" && (
         <>
           <div className="min-h-0 flex-1 basis-2/5 overflow-hidden">
             <SqlEditor
@@ -340,6 +370,8 @@ export function WorkspacePage() {
           </div>
         </>
       )}
+        </div>
+      </div>
     </div>
   );
 }

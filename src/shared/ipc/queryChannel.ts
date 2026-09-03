@@ -4,17 +4,16 @@ import type {
   ExecutionAccepted,
   QueryExecuteRequest,
   QueryStreamEvent,
+  TableDataExecuteRequest,
 } from "../../generated/ipc-types";
 import { ipc } from "./invoke";
 
 /**
- * Runs one execution: wires the Tauri Channel into the ResultStore and
- * acks every rows chunk once it has landed (max 2 unacked on the Rust side).
+ * Wires a per-execution Tauri Channel into the ResultStore and acks every
+ * rows chunk once it has landed (max 2 unacked on the Rust side).
  */
-export async function runQuery(request: QueryExecuteRequest): Promise<ExecutionAccepted> {
-  const tab = request.resultTabId;
-  resultStore.create(tab);
-
+function resultChannel(resultTabId: string): Channel<QueryStreamEvent> {
+  const tab = resultTabId;
   const channel = new Channel<QueryStreamEvent>();
   channel.onmessage = (event) => {
     switch (event.type) {
@@ -29,7 +28,7 @@ export async function runQuery(request: QueryExecuteRequest): Promise<ExecutionA
         void ipc.queryAckChunk({ executionId: event.executionId, sequence: event.sequence });
         break;
       case "notice":
-        break; // surfaced in Milestone B
+        break; // surfaced in a later milestone
       case "command":
         resultStore.setCommand(tab, event.commandTag, event.affectedRows);
         break;
@@ -60,14 +59,26 @@ export async function runQuery(request: QueryExecuteRequest): Promise<ExecutionA
         break;
     }
   };
+  return channel;
+}
 
+async function start(
+  resultTabId: string,
+  invokeFn: (channel: Channel<QueryStreamEvent>) => Promise<ExecutionAccepted>,
+): Promise<ExecutionAccepted> {
+  resultStore.create(resultTabId);
   try {
-    return await ipc.queryExecute(request, channel);
+    return await invokeFn(resultChannel(resultTabId));
   } catch (err) {
-    resultStore.setTerminal(tab, {
-      status: "failed",
-      error: err as never,
-    });
+    resultStore.setTerminal(resultTabId, { status: "failed", error: err as never });
     throw err;
   }
+}
+
+export function runQuery(request: QueryExecuteRequest): Promise<ExecutionAccepted> {
+  return start(request.resultTabId, (ch) => ipc.queryExecute(request, ch));
+}
+
+export function runTableData(request: TableDataExecuteRequest): Promise<ExecutionAccepted> {
+  return start(request.resultTabId, (ch) => ipc.tableDataExecute(request, ch));
 }

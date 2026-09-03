@@ -83,3 +83,33 @@ data: string, eof: boolean, };
 
 export type ResultReleaseRequest = { resultTabId: string, };
 
+export type MetadataListSchemasRequest = { connectionId: string, includeSystem: boolean, };
+
+export type SchemaInfo = { oid: number, name: string, isSystem: boolean, };
+
+export type ObjectKind = "table" | "view" | "materialized-view" | "function" | "sequence";
+
+export type MetadataListObjectsRequest = { connectionId: string, schemaOids: Array<number>, kinds: Array<ObjectKind>, };
+
+export type DatabaseObjectSummary = { oid: number, schema: string, name: string, kind: ObjectKind, canSelect: boolean | null, canInsert: boolean | null, canUpdate: boolean | null, canDelete: boolean | null, };
+
+export type MetadataGetTableRequest = { connectionId: string, relationOid: number, };
+
+export type TableColumnMetadata = { attributeNumber: number, name: string, pgTypeOid: number, pgTypeName: string, nullable: boolean, defaultExpr: string | null, isGenerated: boolean, isPrimaryKey: boolean, };
+
+export type TableMetadata = { relationOid: number, schema: string, name: string, 
+/**
+ * 'table' | 'partitioned-table' | 'view' | 'materialized-view'
+ */
+kind: string, columns: Array<TableColumnMetadata>, 
+/**
+ * attribute numbers of the primary key, in key order
+ */
+primaryKey: Array<number>, uniqueKeys: Array<Array<number>>, rowLevelSecurity: boolean, };
+
+export type TableDataExecuteRequest = { connectionId: string, queryTabId: string, resultTabId: string, relationOid: number, 
+/**
+ * attribute number to sort by (validated against the catalog)
+ */
+sortAttribute: number | null, sortDescending: boolean, limit: number, offset: number, };
+

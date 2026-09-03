@@ -77,26 +77,65 @@ pub async fn query_session_close(
 }
 
 #[tauri::command]
+pub async fn metadata_list_schemas(
+    state: State<'_, AppState>,
+    request: crate::domain::metadata::MetadataListSchemasRequest,
+) -> Result<Vec<crate::domain::metadata::SchemaInfo>, AppError> {
+    crate::application::metadata_service::list_schemas(&state, &request).await
+}
+
+#[tauri::command]
+pub async fn metadata_list_objects(
+    state: State<'_, AppState>,
+    request: crate::domain::metadata::MetadataListObjectsRequest,
+) -> Result<Vec<crate::domain::metadata::DatabaseObjectSummary>, AppError> {
+    crate::application::metadata_service::list_objects(&state, &request).await
+}
+
+#[tauri::command]
+pub async fn metadata_get_table(
+    state: State<'_, AppState>,
+    request: crate::domain::metadata::MetadataGetTableRequest,
+) -> Result<crate::domain::metadata::TableMetadata, AppError> {
+    crate::application::metadata_service::get_table(&state, &request).await
+}
+
+#[tauri::command]
+pub async fn table_data_execute(
+    state: State<'_, AppState>,
+    request: crate::domain::metadata::TableDataExecuteRequest,
+    on_event: Channel<QueryStreamEvent>,
+) -> Result<ExecutionAccepted, AppError> {
+    let sink = channel_sink(state.executions.clone(), on_event);
+    query_service::table_data_execute(&state, request, sink).await
+}
+
+fn channel_sink(
+    executions: Arc<std::sync::Mutex<std::collections::HashMap<String, Arc<crate::infrastructure::postgres::session_actor::ExecutionState>>>>,
+    on_event: Channel<QueryStreamEvent>,
+) -> crate::infrastructure::postgres::session_actor::EventSink {
+    Arc::new(move |event: QueryStreamEvent| {
+        let terminal_of = match &event {
+            QueryStreamEvent::Completed { execution_id, .. }
+            | QueryStreamEvent::Failed { execution_id, .. }
+            | QueryStreamEvent::Cancelled { execution_id, .. } => Some(execution_id.clone()),
+            _ => None,
+        };
+        let delivered = on_event.send(event).is_ok();
+        if let Some(id) = terminal_of {
+            executions.lock().unwrap().remove(&id);
+        }
+        delivered
+    })
+}
+
+#[tauri::command]
 pub fn query_execute(
     state: State<'_, AppState>,
     request: QueryExecuteRequest,
     on_event: Channel<QueryStreamEvent>,
 ) -> Result<ExecutionAccepted, AppError> {
-    let executions = state.executions.clone();
-    let sink: crate::infrastructure::postgres::session_actor::EventSink =
-        Arc::new(move |event: QueryStreamEvent| {
-            let terminal_of = match &event {
-                QueryStreamEvent::Completed { execution_id, .. }
-                | QueryStreamEvent::Failed { execution_id, .. }
-                | QueryStreamEvent::Cancelled { execution_id, .. } => Some(execution_id.clone()),
-                _ => None,
-            };
-            let delivered = on_event.send(event).is_ok();
-            if let Some(id) = terminal_of {
-                executions.lock().unwrap().remove(&id);
-            }
-            delivered
-        });
+    let sink = channel_sink(state.executions.clone(), on_event);
     query_service::execute(&state, request, sink)
 }
 
