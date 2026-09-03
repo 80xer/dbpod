@@ -2,49 +2,24 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { useCallback, useRef, useState, useSyncExternalStore } from "react";
 import { editStore, type InsertCell } from "../../entities/result/editStore";
 import { resultStore } from "../../entities/result/resultStore";
-import type { ColumnMeta, DbValue } from "../../generated/ipc-types";
+import type { ColumnMeta } from "../../generated/ipc-types";
+import { ipc } from "../../shared/ipc/invoke";
 import { interpretMarker, parseTsv } from "../data-editing/tsv";
+import { cellClass, cellText } from "./cellText";
+import { toCsv, toJson, toTsv } from "./exporters";
 
-function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
-}
+export { cellText } from "./cellText";
 
-export function cellText(v: DbValue | undefined): string {
-  if (!v) return "";
-  switch (v.kind) {
-    case "null":
-      return "NULL";
-    case "boolean":
-      return v.value ? "true" : "false";
-    case "binary":
-      return v.value === null
-        ? `<binary ${formatBytes(v.byteLength)}>`
-        : `<binary ${formatBytes(v.byteLength)} base64:${v.value.slice(0, 24)}…>`;
-    case "array":
-      return `{${v.values.map(cellText).join(",")}}`;
-    default:
-      return v.value;
-  }
-}
+type CellPos = { r: number; c: number };
+type Selection = { anchor: CellPos; focus: CellPos };
 
-function cellClass(v: DbValue | undefined): string {
-  if (!v) return "";
-  switch (v.kind) {
-    case "null":
-      return "text-gray-400 italic";
-    case "unknown":
-    case "composite":
-    case "binary":
-      return "text-gray-400";
-    case "integer":
-    case "decimal":
-    case "float":
-      return "text-right tabular-nums";
-    default:
-      return "";
-  }
+function selectionRange(sel: Selection) {
+  return {
+    minR: Math.min(sel.anchor.r, sel.focus.r),
+    maxR: Math.max(sel.anchor.r, sel.focus.r),
+    minC: Math.min(sel.anchor.c, sel.focus.c),
+    maxC: Math.max(sel.anchor.c, sel.focus.c),
+  };
 }
 
 type EditProps = {
@@ -133,6 +108,7 @@ export function ResultGrid({ resultTabId, hiddenColumns, sort, onHeaderClick, ed
     () => editStore.getSnapshot(resultTabId),
   );
   const [editing, setEditing] = useState<EditingCell | null>(null);
+  const [selection, setSelection] = useState<Selection | null>(null);
   const parentRef = useRef<HTMLDivElement>(null);
   const virtualizer = useVirtualizer({
     count: snapshot.rows.length,
@@ -160,6 +136,41 @@ export function ResultGrid({ resultTabId, hiddenColumns, sort, onHeaderClick, ed
       );
     }
   };
+
+  const copySelection = () => {
+    const range = selection ? selectionRange(selection) : null;
+    const cols = range ? columns.slice(range.minC, range.maxC + 1) : columns;
+    const rows = range
+      ? snapshot.rows.slice(range.minR, range.maxR + 1)
+      : snapshot.rows;
+    if (rows.length === 0) return;
+    // Clipboard writes happen only on this explicit user gesture.
+    void navigator.clipboard.writeText(toTsv(cols, rows, !range));
+  };
+
+  const exportAs = async (format: "csv" | "json") => {
+    const content = format === "csv" ? toCsv(columns, snapshot.rows) : toJson(columns, snapshot.rows);
+    await ipc
+      .exportSave({ suggestedName: `dbpod-result.${format}`, content })
+      .catch(() => undefined);
+  };
+
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === "c" && !editing) {
+      e.preventDefault();
+      copySelection();
+    }
+  };
+
+  const selectedRange = selection ? selectionRange(selection) : null;
+  const inSelection = (r: number, ci: number) =>
+    Boolean(
+      selectedRange &&
+        r >= selectedRange.minR &&
+        r <= selectedRange.maxR &&
+        ci >= selectedRange.minC &&
+        ci <= selectedRange.maxC,
+    );
 
   const onPaste = (e: React.ClipboardEvent) => {
     if (!edit) return;
@@ -197,7 +208,7 @@ export function ResultGrid({ resultTabId, hiddenColumns, sort, onHeaderClick, ed
     }
   })();
 
-  const renderDataCell = (rowIndex: number, c: ColumnMeta) => {
+  const renderDataCell = (rowIndex: number, c: ColumnMeta, ci: number) => {
     const row = snapshot.rows[rowIndex];
     const cell = row[c.index];
     const draft = edit ? edits.updates.get(rowIndex)?.get(c.name) : undefined;
@@ -205,13 +216,27 @@ export function ResultGrid({ resultTabId, hiddenColumns, sort, onHeaderClick, ed
     const isEditing =
       editing?.type === "cell" && editing.rowIndex === rowIndex && editing.column === c.name;
     const shown = draft ? (draft.value === null ? "NULL" : draft.value) : cellText(cell);
+    const selected = inSelection(rowIndex, ci);
     return (
       <td
         key={c.index}
-        className={`w-[200px] shrink-0 truncate border-b border-r border-gray-100 px-2 py-1 ${
+        className={`w-[200px] shrink-0 select-none truncate border-b border-r border-gray-100 px-2 py-1 ${
           draft ? "bg-amber-100 font-medium" : cellClass(cell)
-        } ${draft?.value === null ? "italic text-gray-500" : ""}`}
+        } ${draft?.value === null ? "italic text-gray-500" : ""} ${
+          selected ? "bg-blue-200/70" : ""
+        }`}
         title={shown}
+        onMouseDown={(e) => {
+          if (e.button !== 0 || isEditing) return;
+          const pos = { r: rowIndex, c: ci };
+          setSelection((prev) =>
+            e.shiftKey && prev ? { anchor: prev.anchor, focus: pos } : { anchor: pos, focus: pos },
+          );
+        }}
+        onMouseEnter={(e) => {
+          if (e.buttons === 1 && !editing)
+            setSelection((prev) => (prev ? { anchor: prev.anchor, focus: { r: rowIndex, c: ci } } : prev));
+        }}
         onDoubleClick={editable ? () => setEditing({ type: "cell", rowIndex, column: c.name }) : undefined}
       >
         {isEditing ? (
@@ -233,7 +258,9 @@ export function ResultGrid({ resultTabId, hiddenColumns, sort, onHeaderClick, ed
       <div
         ref={parentRef}
         onPaste={onPaste}
-        className="min-h-0 flex-1 overflow-auto border-t border-gray-200"
+        onKeyDown={onKeyDown}
+        tabIndex={0}
+        className="min-h-0 flex-1 overflow-auto border-t border-gray-200 outline-none focus-visible:ring-1 focus-visible:ring-blue-300"
         role="grid"
         aria-rowcount={snapshot.rows.length + edits.inserts.length}
       >
@@ -295,7 +322,7 @@ export function ResultGrid({ resultTabId, hiddenColumns, sort, onHeaderClick, ed
                         vi.index + 1
                       )}
                     </td>
-                    {columns.map((c) => renderDataCell(vi.index, c))}
+                    {columns.map((c, ci) => renderDataCell(vi.index, c, ci))}
                   </tr>
                 );
               })}
@@ -376,11 +403,38 @@ export function ResultGrid({ resultTabId, hiddenColumns, sort, onHeaderClick, ed
           </table>
         )}
       </div>
-      <div className="shrink-0 border-t border-gray-200 bg-gray-50 px-3 py-1 text-xs text-gray-600">
-        {statusLine}
+      <div className="flex shrink-0 items-center border-t border-gray-200 bg-gray-50 px-3 py-1 text-xs text-gray-600">
+        <span>{statusLine}</span>
         {snapshot.transactionState && snapshot.transactionState !== "idle" && (
           <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-amber-800">
             {snapshot.transactionState === "in-transaction" ? "트랜잭션 열림" : "트랜잭션 실패 상태"}
+          </span>
+        )}
+        {snapshot.rows.length > 0 && (
+          <span className="ml-auto flex gap-1.5">
+            <button
+              type="button"
+              onClick={copySelection}
+              title="선택 영역(없으면 전체)을 TSV로 복사 (Cmd/Ctrl+C)"
+              className="rounded border border-gray-300 px-1.5 py-0.5 hover:bg-gray-100"
+            >
+              TSV 복사
+            </button>
+            <button
+              type="button"
+              onClick={() => void exportAs("csv")}
+              title="CSV 내보내기 (formula injection 방어 적용)"
+              className="rounded border border-gray-300 px-1.5 py-0.5 hover:bg-gray-100"
+            >
+              CSV
+            </button>
+            <button
+              type="button"
+              onClick={() => void exportAs("json")}
+              className="rounded border border-gray-300 px-1.5 py-0.5 hover:bg-gray-100"
+            >
+              JSON
+            </button>
           </span>
         )}
       </div>

@@ -73,6 +73,8 @@ export const ipc = {
     invoke<void>("changes_commit", { request, onEvent }),
   changesDiscard: (request: ChangesDiscardRequest) =>
     invoke<void>("changes_discard", { request }),
+  exportSave: (request: { suggestedName: string; content: string }) =>
+    invoke<boolean>("export_save", { request }),
   workspaceSnapshotLoad: () => invoke<WorkspaceSnapshot | null>("workspace_snapshot_load"),
   workspaceSnapshotSave: (snapshot: WorkspaceSnapshot) =>
     invoke<void>("workspace_snapshot_save", { snapshot }),

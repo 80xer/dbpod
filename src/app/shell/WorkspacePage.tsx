@@ -14,7 +14,11 @@ import {
 import { ObjectSidebar } from "../../features/object-explorer/ObjectSidebar";
 import { TableDataView } from "../../features/object-explorer/TableDataView";
 import { SqlEditor } from "../../features/query-editor/SqlEditor";
-import { statementAt } from "../../features/query-editor/statementSplitter";
+import {
+  firstKeyword,
+  statementAt,
+  stripLiterals,
+} from "../../features/query-editor/statementSplitter";
 import { QueryResultPane } from "../../features/result-grid/QueryResultPane";
 import { ipc } from "../../shared/ipc/invoke";
 import { runQuery } from "../../shared/ipc/queryChannel";
@@ -91,6 +95,22 @@ export function WorkspacePage() {
     if (!sql) {
       setNotice("실행할 SQL이 없습니다.");
       return;
+    }
+    // Accident-prevention UX, not a security boundary (that's the DB role).
+    const keyword = firstKeyword(sql);
+    if (keyword === "DROP" || keyword === "TRUNCATE") {
+      if (!window.confirm(`${keyword} 문을 실행하려고 합니다. 계속할까요?\n\n${sql.slice(0, 200)}`))
+        return;
+    } else if (
+      (keyword === "DELETE" || keyword === "UPDATE") &&
+      !/\bWHERE\b/i.test(stripLiterals(sql))
+    ) {
+      if (
+        !window.confirm(
+          `WHERE 절이 없는 ${keyword} 문입니다. 전체 행에 적용될 수 있습니다. 계속할까요?`,
+        )
+      )
+        return;
     }
     setNotice("");
 

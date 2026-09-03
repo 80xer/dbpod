@@ -140,6 +140,11 @@ export function stripLiterals(sql: string): string {
   return out;
 }
 
+/** First keyword of a statement, ignoring comments and literals. */
+export function firstKeyword(sql: string): string {
+  return (stripLiterals(sql).match(/[A-Za-z_][A-Za-z0-9_]*/)?.[0] ?? "").toUpperCase();
+}
+
 /** The statement containing the cursor, or the last one before it. */
 export function statementAt(sql: string, cursor: number): Statement | undefined {
   const statements = splitStatements(sql);

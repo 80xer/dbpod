@@ -16,6 +16,7 @@ use state::AppState;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
             let store = ProfileStore::load(dir.clone()).map_err(|e| e.to_string())?;
@@ -46,6 +47,7 @@ pub fn run() {
             commands::changes_preview,
             commands::changes_commit,
             commands::changes_discard,
+            commands::export::export_save,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
