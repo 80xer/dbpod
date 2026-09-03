@@ -29,6 +29,7 @@ export function WorkspacePage() {
       if (executionRef.current) void ipc.queryCancel({ executionId: executionRef.current });
       if (sessionId)
         void ipc.querySessionClose({ sessionId, rollbackOpenTransaction: true });
+      void ipc.resultRelease({ resultTabId });
       resultStore.dispose(resultTabId);
     };
   }, [resultTabId]);

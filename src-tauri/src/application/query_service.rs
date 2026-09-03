@@ -6,6 +6,7 @@ use uuid::Uuid;
 
 use crate::domain::events::*;
 use crate::error::AppError;
+use crate::infrastructure::postgres::large_values::LargeValueStore;
 use crate::infrastructure::postgres::session_actor::{
     spawn_session, EventSink, ExecutionState, SessionMsg,
 };
@@ -135,11 +136,20 @@ pub fn execute(
                 "this query tab already has a running execution",
             ));
         }
+        // Fresh large-value store per execution; replacing a result tab drops
+        // the previous execution's handles.
+        let large = Arc::new(LargeValueStore::default());
+        state
+            .large_values
+            .lock()
+            .unwrap()
+            .insert(req.result_tab_id.clone(), large.clone());
         let execution = Arc::new(ExecutionState::new(
             Uuid::new_v4().to_string(),
             session_id.clone(),
             req.connection_id.clone(),
             handle.backend_pid.clone(),
+            large,
         ));
         (handle, execution)
     };
@@ -169,6 +179,30 @@ pub fn execute(
         return Err(AppError::internal("session mailbox unavailable"));
     }
     Ok(accepted)
+}
+
+pub fn result_value_fetch(
+    state: &AppState,
+    req: &ResultValueFetchRequest,
+) -> Result<ResultValueFetchResponse, AppError> {
+    let store = state
+        .large_values
+        .lock()
+        .unwrap()
+        .get(&req.result_tab_id)
+        .cloned()
+        .ok_or_else(|| AppError::invalid_request("unknown result tab"))?;
+    let (bytes, eof) = store.read(&req.value_handle, req.offset, req.length)?;
+    use base64::Engine;
+    Ok(ResultValueFetchResponse {
+        data: base64::engine::general_purpose::STANDARD.encode(bytes),
+        eof,
+    })
+}
+
+pub fn result_release(state: &AppState, req: &ResultReleaseRequest) -> Result<(), AppError> {
+    state.large_values.lock().unwrap().remove(&req.result_tab_id);
+    Ok(())
 }
 
 pub fn ack_chunk(state: &AppState, req: &QueryAckChunkRequest) -> Result<(), AppError> {

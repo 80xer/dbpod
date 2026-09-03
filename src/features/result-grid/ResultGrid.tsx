@@ -3,25 +3,44 @@ import { useCallback, useRef, useSyncExternalStore } from "react";
 import { resultStore } from "../../entities/result/resultStore";
 import type { DbValue } from "../../generated/ipc-types";
 
-function cellText(v: DbValue): string {
-  switch (v.t) {
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+export function cellText(v: DbValue): string {
+  switch (v.kind) {
     case "null":
       return "NULL";
-    case "bool":
-      return v.v ? "true" : "false";
-    case "int":
-    case "float":
-      return String(v.v);
+    case "boolean":
+      return v.value ? "true" : "false";
+    case "binary":
+      return v.value === null
+        ? `<binary ${formatBytes(v.byteLength)}>`
+        : `<binary ${formatBytes(v.byteLength)} base64:${v.value.slice(0, 24)}…>`;
+    case "array":
+      return `{${v.values.map(cellText).join(",")}}`;
     default:
-      return v.v;
+      return v.value;
   }
 }
 
 function cellClass(v: DbValue): string {
-  if (v.t === "null") return "text-gray-400 italic";
-  if (v.t === "fallback") return "text-gray-400";
-  if (v.t === "int" || v.t === "float" || v.t === "numeric") return "text-right tabular-nums";
-  return "";
+  switch (v.kind) {
+    case "null":
+      return "text-gray-400 italic";
+    case "unknown":
+    case "composite":
+    case "binary":
+      return "text-gray-400";
+    case "integer":
+    case "decimal":
+    case "float":
+      return "text-right tabular-nums";
+    default:
+      return "";
+  }
 }
 
 // ponytail: header + virtualized rows straight from the ResultStore; adopt the
@@ -75,10 +94,10 @@ export function ResultGrid({ resultTabId }: { resultTabId: string }) {
                   <th
                     key={c.index}
                     className="max-w-[320px] truncate border-b border-r border-gray-200 bg-gray-50 px-2 py-1 text-left font-medium"
-                    title={`${c.name} (${c.typeName.toLowerCase()})`}
+                    title={`${c.name} (${c.pgTypeName.toLowerCase()})`}
                   >
                     {c.name}
-                    <span className="ml-1 font-normal text-gray-400">{c.typeName.toLowerCase()}</span>
+                    <span className="ml-1 font-normal text-gray-400">{c.pgTypeName.toLowerCase()}</span>
                   </th>
                 ))}
               </tr>

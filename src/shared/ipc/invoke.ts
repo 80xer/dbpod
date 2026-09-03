@@ -15,6 +15,9 @@ import type {
   QueryExecuteRequest,
   QuerySessionCloseRequest,
   QueryStreamEvent,
+  ResultReleaseRequest,
+  ResultValueFetchRequest,
+  ResultValueFetchResponse,
   VaultStatus,
 } from "../../generated/ipc-types";
 
@@ -39,4 +42,8 @@ export const ipc = {
     invoke<void>("query_ack_chunk", { request }),
   queryCancel: (request: QueryCancelRequest) =>
     invoke<QueryCancelResponse>("query_cancel", { request }),
+  resultValueFetch: (request: ResultValueFetchRequest) =>
+    invoke<ResultValueFetchResponse>("result_value_fetch", { request }),
+  resultRelease: (request: ResultReleaseRequest) =>
+    invoke<void>("result_release", { request }),
 };

@@ -31,9 +31,23 @@ export type ConnectionCloseRequest = { connectionId: string, };
 
 export type VaultStatus = { state: string, secureStorageAvailable: boolean, };
 
-export type DbValue = { "t": "null" } | { "t": "bool", "v": boolean } | { "t": "int", "v": number } | { "t": "float", "v": number } | { "t": "numeric", "v": string } | { "t": "text", "v": string } | { "t": "timestamp", "v": string } | { "t": "uuid", "v": string } | { "t": "json", "v": string } | { "t": "fallback", "v": string };
+export type TemporalType = "date" | "time" | "timetz" | "timestamp" | "timestamptz" | "interval";
 
-export type ColumnMeta = { index: number, name: string, typeOid: number, typeName: string, };
+export type JsonType = "json" | "jsonb";
+
+export type ArrayDimension = { lowerBound: number, length: number, };
+
+export type DbValue = { "kind": "null" } | { "kind": "boolean", value: boolean, } | { "kind": "integer", value: string, } | { "kind": "decimal", value: string, } | { "kind": "float", value: string, } | { "kind": "text", value: string, } | { "kind": "uuid", value: string, } | { "kind": "temporal", temporalType: TemporalType, value: string, } | { "kind": "json", value: string, jsonType: JsonType, } | { "kind": "binary", encoding: string, value: string | null, byteLength: number, truncated: boolean, valueHandle: string | null, } | { "kind": "array", dimensions: Array<ArrayDimension>, values: Array<DbValue>, elementTypeOid: number, } | { "kind": "enum", value: string, typeName: string, } | { "kind": "network", value: string, networkType: string, } | { "kind": "range", value: string, rangeType: string, } | { "kind": "composite", value: string, typeName: string, } | { "kind": "unknown", value: string, typeOid: number, typeName: string, };
+
+export type ColumnCategory = "boolean" | "integer" | "decimal" | "float" | "text" | "binary" | "uuid" | "temporal" | "json" | "array" | "enum" | "network" | "range" | "composite" | "unknown";
+
+export type ColumnSource = { relationOid: number, attributeNumber: number, };
+
+export type ColumnMeta = { index: number, name: string, pgTypeOid: number, pgTypeName: string, category: ColumnCategory, source: ColumnSource | null, nullable: boolean | null, 
+/**
+ * Conservative default until editability detection lands (Milestone C).
+ */
+editable: boolean, };
 
 export type TransactionState = "idle" | "in-transaction" | "failed-transaction";
 
@@ -58,4 +72,14 @@ export type QueryCancelResponse = {
  * "cancel-requested" | "already-terminal"
  */
 state: string, };
+
+export type ResultValueFetchRequest = { resultTabId: string, valueHandle: string, offset: number, length: number, };
+
+export type ResultValueFetchResponse = { 
+/**
+ * base64 of the requested byte range
+ */
+data: string, eof: boolean, };
+
+export type ResultReleaseRequest = { resultTabId: string, };
 

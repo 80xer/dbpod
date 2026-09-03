@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DbValue } from "../../generated/ipc-types";
 import { resultStore } from "./resultStore";
 
-const row = (n: number): DbValue[] => [{ t: "int", v: n }];
+const row = (n: number): DbValue[] => [{ kind: "integer", value: String(n) }];
 
 describe("resultStore", () => {
   const tab = "tab-1";

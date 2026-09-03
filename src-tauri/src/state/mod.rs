@@ -6,6 +6,7 @@ use sqlx::PgConnection;
 
 use crate::domain::ConnectionProfile;
 use crate::infrastructure::persistence::profiles::ProfileStore;
+use crate::infrastructure::postgres::large_values::LargeValueStore;
 use crate::infrastructure::postgres::session_actor::{ExecutionState, SessionHandle};
 
 pub struct Workspace {
@@ -27,6 +28,8 @@ pub struct AppState {
     /// executionId -> live execution (removed when terminal).
     /// Arc so event sinks can deregister without holding AppState.
     pub executions: Arc<Mutex<HashMap<String, Arc<ExecutionState>>>>,
+    /// resultTabId -> large-value store (dropped on result_release).
+    pub large_values: Mutex<HashMap<String, Arc<LargeValueStore>>>,
 }
 
 impl AppState {
@@ -35,6 +38,7 @@ impl AppState {
             profiles: Mutex::new(profiles),
             workspaces: Mutex::new(HashMap::new()),
             executions: Arc::new(Mutex::new(HashMap::new())),
+            large_values: Mutex::new(HashMap::new()),
         }
     }
 }

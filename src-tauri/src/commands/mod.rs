@@ -101,6 +101,22 @@ pub fn query_execute(
 }
 
 #[tauri::command]
+pub fn result_value_fetch(
+    state: State<'_, AppState>,
+    request: ResultValueFetchRequest,
+) -> Result<ResultValueFetchResponse, AppError> {
+    query_service::result_value_fetch(&state, &request)
+}
+
+#[tauri::command]
+pub fn result_release(
+    state: State<'_, AppState>,
+    request: ResultReleaseRequest,
+) -> Result<(), AppError> {
+    query_service::result_release(&state, &request)
+}
+
+#[tauri::command]
 pub fn query_ack_chunk(
     state: State<'_, AppState>,
     request: QueryAckChunkRequest,

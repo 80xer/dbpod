@@ -13,6 +13,7 @@ use crate::domain::DbValue;
 use crate::error::AppError;
 
 use super::decoder;
+use super::large_values::LargeValueStore;
 
 /// Delivers one stream event; returns false when the consumer is gone
 /// (disposed webview) so the execution stops instead of buffering forever.
@@ -29,6 +30,8 @@ pub struct ExecutionState {
     pub cancel: CancellationToken,
     pub terminal: AtomicBool,
     pub backend_pid: Arc<AtomicI32>,
+    /// Out-of-band store for values beyond the inline limit (keyed per Result Tab).
+    pub large: Arc<LargeValueStore>,
     ack_sem: Arc<Semaphore>,
     sent: AtomicI64,
     acked: Mutex<i64>,
@@ -40,6 +43,7 @@ impl ExecutionState {
         session_id: String,
         connection_id: String,
         backend_pid: Arc<AtomicI32>,
+        large: Arc<LargeValueStore>,
     ) -> Self {
         Self {
             id,
@@ -48,6 +52,7 @@ impl ExecutionState {
             cancel: CancellationToken::new(),
             terminal: AtomicBool::new(false),
             backend_pid,
+            large,
             ack_sem: Arc::new(Semaphore::new(MAX_UNACKED_CHUNKS)),
             sent: AtomicI64::new(-1),
             acked: Mutex::new(-1),
@@ -327,7 +332,7 @@ async fn run_execution(
             };
             match item {
                 Ok(Some(row)) => {
-                    buf.push(decoder::decode_row(&row));
+                    buf.push(decoder::decode_row(&row, &exec.large));
                     total += 1;
                     let limit = if seq == 0 {
                         FIRST_CHUNK_ROWS
@@ -476,6 +481,7 @@ mod tests {
             "s".into(),
             "c".into(),
             Arc::new(AtomicI32::new(0)),
+            Arc::new(LargeValueStore::default()),
         );
         assert_eq!(exec.ack(0).unwrap_err().code, "INVALID_REQUEST");
         exec.sent.store(1, Ordering::Release);

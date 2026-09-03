@@ -2,9 +2,9 @@
 //! Run: `cargo test --test export_bindings`
 //! CI treats an uncommitted diff of the generated file as a failure.
 
+use dbpod_lib::domain::db_value::*;
 use dbpod_lib::domain::events::*;
 use dbpod_lib::domain::profile::*;
-use dbpod_lib::domain::DbValue;
 use dbpod_lib::error::AppError;
 use ts_rs::TS;
 
@@ -36,7 +36,12 @@ fn export_ipc_types() {
     decl!(ConnectionOpenResponse);
     decl!(ConnectionCloseRequest);
     decl!(VaultStatus);
+    decl!(TemporalType);
+    decl!(JsonType);
+    decl!(ArrayDimension);
     decl!(DbValue);
+    decl!(ColumnCategory);
+    decl!(ColumnSource);
     decl!(ColumnMeta);
     decl!(TransactionState);
     decl!(QueryStreamEvent);
@@ -48,6 +53,9 @@ fn export_ipc_types() {
     decl!(QueryAckChunkRequest);
     decl!(QueryCancelRequest);
     decl!(QueryCancelResponse);
+    decl!(ResultValueFetchRequest);
+    decl!(ResultValueFetchResponse);
+    decl!(ResultReleaseRequest);
 
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../src/generated/ipc-types.ts");
     std::fs::create_dir_all(std::path::Path::new(path).parent().unwrap()).unwrap();
