@@ -1,4 +1,4 @@
-import { useCallback, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { editStore } from "../../entities/result/editStore";
 import { resultStore } from "../../entities/result/resultStore";
 import type { ChangesPreviewResponse, RowConflict } from "../../generated/ipc-types";
@@ -6,14 +6,10 @@ import { ipc } from "../../shared/ipc/invoke";
 import type { Editability, EditableInfo } from "./editability";
 import { applyServerValues, buildRowChanges, commitChangeSet } from "./saveChanges";
 
-function Dialog({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30" role="dialog" aria-modal="true">
-      <div className="max-h-[80vh] w-[560px] max-w-[90vw] overflow-auto rounded-lg bg-white p-4 shadow-xl">
-        {children}
-      </div>
-    </div>
-  );
+function Dialog({ children, onCancel }: { children: React.ReactNode; onCancel: () => void }) {
+  const ref = useRef<HTMLDialogElement>(null);
+  useEffect(() => { ref.current?.showModal(); return () => ref.current?.close(); }, []);
+  return <dialog ref={ref} aria-label="변경 사항 확인" onCancel={(e) => { e.preventDefault(); onCancel(); }} className="m-auto max-h-[80vh] w-[560px] max-w-[90vw] overflow-auto rounded-lg bg-white p-4 shadow-xl backdrop:bg-black/30">{children}</dialog>;
 }
 
 export function EditBar({
@@ -35,6 +31,20 @@ export function EditBar({
   const [showValues, setShowValues] = useState(false);
   const [busy, setBusy] = useState(false);
 
+  const alive = useRef(true);
+  const previewId = useRef<string | null>(null);
+  const committing = useRef(false);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+      if (!committing.current) {
+        if (previewId.current) void ipc.changesDiscard({ changeSetId: previewId.current }).catch(() => undefined);
+        editStore.setLocked(resultTabId, false);
+      }
+    };
+  }, [resultTabId]);
+
   if (!editability.editable) {
     return (
       <div className="shrink-0 border-b border-gray-200 bg-gray-50 px-3 py-1 text-xs text-gray-500">
@@ -46,6 +56,8 @@ export function EditBar({
 
   const openPreview = async () => {
     setMessage("");
+    if (editStore.getSnapshot(resultTabId).locked) return;
+    editStore.setLocked(resultTabId, true);
     setBusy(true);
     try {
       const changes = buildRowChanges(info, resultStore.getSnapshot(resultTabId), edits);
@@ -55,9 +67,16 @@ export function EditBar({
         relationOid: info.relationOid,
         changes,
       });
+      if (!alive.current) {
+        await ipc.changesDiscard({ changeSetId: resp.changeSetId });
+        editStore.setLocked(resultTabId, false);
+        return;
+      }
+      previewId.current = resp.changeSetId;
       setPreview(resp);
     } catch (e) {
       const err = e as { message?: string };
+      editStore.setLocked(resultTabId, false);
       setMessage(`검증 실패: ${err?.message ?? String(e)}`);
     } finally {
       setBusy(false);
@@ -65,12 +84,13 @@ export function EditBar({
   };
 
   const commit = async () => {
-    if (!preview) return;
+    if (!preview || committing.current) return;
     if (
       preview.counts.delete >= 10 &&
       !window.confirm(`${preview.counts.delete}개 행을 삭제합니다. 계속할까요?`)
     )
       return;
+    committing.current = true;
     setBusy(true);
     try {
       const outcome = await commitChangeSet(resultTabId, preview.changeSetId, info);
@@ -80,18 +100,24 @@ export function EditBar({
       } else if (outcome.type === "conflict") {
         setConflicts(outcome.conflicts);
       } else {
-        setMessage(`저장 실패(전체 롤백됨): ${outcome.message}`);
+        setMessage(`저장 실패: ${outcome.message}`);
       }
     } catch (e) {
       setPreview(null);
       const err = e as { message?: string };
       setMessage(`저장 실패: ${err?.message ?? String(e)}`);
     } finally {
+      committing.current = false;
+      previewId.current = null;
+      editStore.setLocked(resultTabId, false);
       setBusy(false);
     }
   };
 
   const cancelPreview = () => {
+    if (committing.current) return;
+    previewId.current = null;
+    editStore.setLocked(resultTabId, false);
     if (preview) void ipc.changesDiscard({ changeSetId: preview.changeSetId }).catch(() => undefined);
     setPreview(null);
     setShowValues(false);
@@ -132,7 +158,7 @@ export function EditBar({
       </div>
 
       {preview && (
-        <Dialog>
+        <Dialog onCancel={cancelPreview}>
           <h3 className="mb-2 text-sm font-semibold">변경 사항 저장 — SQL Preview</h3>
           <p className="mb-2 text-xs text-gray-600">
             {preview.target.schema}.{preview.target.table} · 하나의 트랜잭션으로{" "}
@@ -157,9 +183,9 @@ export function EditBar({
             값 표시 (화면에만 표시, 로그·클립보드 저장 안 함)
           </label>
           {showValues && (
-            <p className="mb-3 rounded bg-gray-50 p-2 text-xs text-gray-600">
-              대기 중 변경 {edits.pendingCount}건 — 셀의 하이라이트 값이 그대로 bind parameter로 전달됩니다.
-            </p>
+            <pre className="mb-3 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded bg-gray-50 p-2 text-xs text-gray-600">
+              {JSON.stringify(buildRowChanges(info, resultStore.getSnapshot(resultTabId), edits), null, 2)}
+            </pre>
           )}
           <div className="flex justify-end gap-2">
             <button type="button" onClick={cancelPreview} className="rounded border border-gray-300 px-3 py-1 text-sm hover:bg-gray-50">
@@ -178,7 +204,7 @@ export function EditBar({
       )}
 
       {conflicts && (
-        <Dialog>
+        <Dialog onCancel={() => setConflicts(null)}>
           <h3 className="mb-2 text-sm font-semibold">저장 충돌 — 자동 덮어쓰기 없음</h3>
           <p className="mb-2 text-xs text-gray-600">
             다른 세션이 아래 행을 변경했거나 삭제했습니다. 전체 트랜잭션이 롤백되었고 편집 내용은 유지됩니다.

@@ -1,6 +1,6 @@
 import type { ColumnMeta, TableMetadata } from "../../generated/ipc-types";
 import { ipc } from "../../shared/ipc/invoke";
-import { stripLiterals } from "../query-editor/statementSplitter";
+import { splitStatements, stripLiterals } from "../query-editor/statementSplitter";
 
 export type EditableInfo = {
   editable: true;
@@ -20,26 +20,60 @@ export type EditableInfo = {
 export type Editability = { editable: false; reason: string } | EditableInfo;
 
 const BLOCKED =
-  /\b(JOIN|GROUP\s+BY|HAVING|DISTINCT|UNION|INTERSECT|EXCEPT|OVER|INTO|RETURNING)\b|^\s*WITH\b|\(\s*SELECT\b/i;
+  /\b(JOIN|GROUP\s+BY|HAVING|DISTINCT|UNION|INTERSECT|EXCEPT|OVER|INTO|RETURNING)\b|^\s*WITH\b|\(\s*(SELECT|TABLE|WITH|VALUES)\b/i;
+const UNSUPPORTED = new Set(["array", "binary", "range", "composite", "unknown"]);
+const unsafeName = (name: string) =>
+  !name || name === "prototype" || Object.prototype.hasOwnProperty.call(Object.prototype, name);
+
+/** A deliberately narrow SELECT/FROM grammar; origin metadata proves the columns. */
+function isPlainSelect(sql: string): boolean {
+  const statements = splitStatements(stripLiterals(sql));
+  if (statements.length !== 1) return false;
+  // Quoted identifiers can contain keywords and commas; treat each as one token.
+  const lexical = statements[0].sql.replace(/"(?:""|[^"])*"/g, "dbpod_identifier");
+  if (BLOCKED.test(lexical)) return false;
+  const select = /^\s*SELECT\s+([\s\S]+?)\s+FROM\s+([\s\S]+)$/i.exec(lexical);
+  if (!select) return false;
+  const ident = "[A-Za-z_][A-Za-z0-9_$]*";
+  const alias = `(?:\\s+(?:AS\\s+)?${ident})?`;
+  const projection = new RegExp(`^(?:${ident}\\s*\\.\\s*){0,2}(?:${ident}|\\*)${alias}$`, "i");
+  if (!select[1].split(",").every((column) => projection.test(column.trim()))) return false;
+  const from = select[2].split(/\b(?:WHERE|ORDER\s+BY|LIMIT|OFFSET|FETCH|FOR)\b/i)[0].trim();
+  return new RegExp(`^(?:ONLY\\s+)?${ident}(?:\\s*\\.\\s*${ident})?${alias}$`, "i").test(from);
+}
 
 function analyzeColumns(
   columns: ColumnMeta[],
   meta: TableMetadata,
   relationOid: number,
+  xminColumnIndex?: number,
 ): Editability {
-  const xminColumnIndex = columns.find((c) => c.name === "__dbpod_xmin")?.index;
-  const visible = columns.filter((c) => c.name !== "__dbpod_xmin");
+  if (meta.relationOid !== relationOid || columns.some((c, i) => c.index !== i))
+    return { editable: false, reason: "결과와 원본 테이블의 컬럼 정보를 확인할 수 없습니다" };
+  if (meta.columns.some((c) => c.name === "__dbpod_xmin" || unsafeName(c.name)))
+    return { editable: false, reason: "안전한 변경 저장에 사용할 수 없는 원본 컬럼 이름입니다" };
+  const visible = columns.filter((c) => c.index !== xminColumnIndex);
 
-  // duplicate source column => ambiguous mapping
+  // Drafts are keyed by display name; identities and values require unique origins.
   const seen = new Set<number>();
+  const names = new Set<string>();
   for (const c of visible) {
-    if (!c.source) continue;
+    if (unsafeName(c.name) || c.name === "__dbpod_xmin" || names.has(c.name))
+      return { editable: false, reason: "중복되거나 안전하지 않은 결과 컬럼 이름은 편집할 수 없습니다" };
+    names.add(c.name);
+    if (!c.source || c.source.relationOid !== relationOid)
+      return { editable: false, reason: "계산식 또는 원본을 확인할 수 없는 컬럼이 포함되어 있습니다" };
     if (seen.has(c.source.attributeNumber))
       return { editable: false, reason: "동일한 원본 컬럼이 중복 표시되어 편집할 수 없습니다" };
     seen.add(c.source.attributeNumber);
+    // Displayed-value locking needs values that the decoder and equality operator support.
+    if (xminColumnIndex === undefined && (UNSUPPORTED.has(c.category) || c.pgTypeOid === 114 || c.pgTypeOid === 142))
+      return { editable: false, reason: "표시된 값으로 안전한 충돌 검사를 지원하지 않는 타입이 포함되어 있습니다" };
   }
 
   const catalogByAttnum = new Map(meta.columns.map((c) => [c.attributeNumber, c]));
+  if (visible.some((c) => catalogByAttnum.get(c.source!.attributeNumber)?.pgTypeOid !== c.pgTypeOid))
+    return { editable: false, reason: "결과 컬럼의 원본 타입을 확인할 수 없습니다" };
   const displayByAttnum = new Map(
     visible.filter((c) => c.source).map((c) => [c.source!.attributeNumber, c]),
   );
@@ -48,7 +82,7 @@ function analyzeColumns(
   for (const attnum of meta.primaryKey) {
     const display = displayByAttnum.get(attnum);
     const catalog = catalogByAttnum.get(attnum);
-    if (!display || !catalog)
+    if (!display || !catalog || UNSUPPORTED.has(display.category))
       return { editable: false, reason: "Primary Key 컬럼이 결과에 모두 포함되어야 편집할 수 있습니다" };
     pk.push({
       attributeNumber: attnum,
@@ -65,7 +99,7 @@ function analyzeColumns(
     const catalog = catalogByAttnum.get(c.source.attributeNumber);
     if (!catalog) continue;
     catalogName[c.name] = catalog.name;
-    if (!catalog.isGenerated && c.category !== "array") editableColumns.add(c.name);
+    if (!catalog.isGenerated && !UNSUPPORTED.has(c.category)) editableColumns.add(c.name);
   }
 
   return {
@@ -89,7 +123,10 @@ export function tableDataEditability(
   if (readOnly) return { editable: false, reason: "읽기 전용 연결입니다" };
   if (meta.kind !== "table" && meta.kind !== "partitioned-table")
     return { editable: false, reason: "베이스 테이블만 편집할 수 있습니다" };
-  return analyzeColumns(columns, meta, meta.relationOid);
+  const xmin = columns.filter((c) => c.name === "__dbpod_xmin");
+  if (xmin.length !== 1 || xmin[0].index !== 0 || xmin[0].source !== null || xmin[0].pgTypeOid !== 25 || xmin[0].category !== "text")
+    return { editable: false, reason: "행 버전 정보를 확인할 수 없습니다" };
+  return analyzeColumns(columns, meta, meta.relationOid, xmin[0].index);
 }
 
 /**
@@ -105,13 +142,10 @@ export async function queryEditability(
 ): Promise<Editability> {
   if (readOnly) return { editable: false, reason: "읽기 전용 연결입니다" };
   if (!executedSql) return { editable: false, reason: "실행 SQL을 확인할 수 없습니다" };
-  const stripped = stripLiterals(executedSql);
-  if (!/^\s*SELECT\b/i.test(stripped))
-    return { editable: false, reason: "단일 SELECT 결과만 편집할 수 있습니다" };
-  if (BLOCKED.test(stripped))
-    return { editable: false, reason: "JOIN·집계·서브쿼리 결과는 읽기 전용입니다" };
+  if (!isPlainSelect(executedSql))
+    return { editable: false, reason: "단일 테이블의 일반 SELECT 결과만 편집할 수 있습니다" };
 
-  const sources = columns.filter((c) => c.name !== "__dbpod_xmin").map((c) => c.source);
+  const sources = columns.map((c) => c.source);
   const relationOids = new Set(sources.filter(Boolean).map((s) => s!.relationOid));
   if (relationOids.size !== 1)
     return { editable: false, reason: "단일 베이스 테이블 결과만 편집할 수 있습니다" };

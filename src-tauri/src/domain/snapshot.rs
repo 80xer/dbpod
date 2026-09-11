@@ -14,8 +14,12 @@ pub struct WorkspaceSnapshot {
 #[serde(rename_all = "camelCase")]
 pub struct ConnectionSnapshot {
     pub profile_id: String,
+    #[serde(default)]
+    pub database: Option<String>,
     pub active_tab_index: Option<u32>,
     pub tabs: Vec<TabSnapshot>,
+    #[serde(default)]
+    pub tab_groups: Vec<TabGroupSnapshot>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -23,4 +27,15 @@ pub struct ConnectionSnapshot {
 pub struct TabSnapshot {
     pub title: String,
     pub sql: String,
+    #[serde(default)]
+    pub id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct TabGroupSnapshot {
+    pub id: String,
+    pub tab_ids: Vec<String>,
+    #[serde(default)]
+    pub active_tab_id: Option<String>,
 }

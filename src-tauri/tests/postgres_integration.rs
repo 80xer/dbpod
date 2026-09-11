@@ -780,6 +780,96 @@ async fn metadata_and_table_data() {
     ));
 }
 
+#[tokio::test]
+async fn metadata_partition_hierarchy() {
+    use dbpod_lib::application::metadata_service;
+    use dbpod_lib::domain::metadata::*;
+
+    let (_node, state) = setup().await;
+    for sql in [
+        "CREATE SCHEMA archive",
+        "CREATE TABLE public.z_events (id int) PARTITION BY RANGE (id)",
+        "CREATE TABLE public.a_events PARTITION OF public.z_events FOR VALUES FROM (0) TO (10) PARTITION BY RANGE (id)",
+        "CREATE TABLE archive.a_leaf PARTITION OF public.a_events FOR VALUES FROM (0) TO (10)",
+        "CREATE TABLE public.inherited (id int)",
+        "CREATE TABLE public.inherited_child () INHERITS (public.inherited)",
+        // More than the old flat-list limit, with the root sorting after its leaves.
+        "DO $$ BEGIN FOR n IN 10..1010 LOOP EXECUTE format('CREATE TABLE public.p_%s PARTITION OF public.z_events FOR VALUES FROM (%s) TO (%s)', n, n, n + 1); END LOOP; END $$",
+    ] {
+        let (sink, mut rx) = sink_channel();
+        let accepted = query_service::execute(&state, req("t-partitions", sql, 10), sink).unwrap();
+        let events = collect_events(&state, &accepted.execution_id, &mut rx).await;
+        assert!(matches!(events.last(), Some(QueryStreamEvent::Completed { .. })), "fixture failed: {events:?}");
+    }
+
+    let schemas = metadata_service::list_schemas(
+        &state,
+        &MetadataListSchemasRequest {
+            connection_id: CONN_ID.into(),
+            include_system: false,
+        },
+    )
+    .await
+    .unwrap();
+    let public = schemas.iter().find(|s| s.name == "public").unwrap().oid;
+    let archive = schemas.iter().find(|s| s.name == "archive").unwrap().oid;
+    for schema_oids in [vec![public], vec![public, archive]] {
+        let objects = metadata_service::list_objects(
+            &state,
+            &MetadataListObjectsRequest {
+                connection_id: CONN_ID.into(),
+                schema_oids,
+                kinds: vec![ObjectKind::Table],
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(objects.len(), 1006);
+        let root = objects.iter().find(|o| o.name == "z_events").unwrap();
+        let branch = objects.iter().find(|o| o.name == "a_events").unwrap();
+        let leaf = objects.iter().find(|o| o.name == "a_leaf").unwrap();
+        assert_eq!(root.partition_parent_oid, None);
+        assert_eq!(branch.partition_parent_oid, Some(root.oid));
+        assert_eq!(leaf.partition_parent_oid, Some(branch.oid));
+        assert_eq!(leaf.schema, "archive");
+        assert_eq!(leaf.can_select, Some(true));
+        assert_eq!(
+            objects
+                .iter()
+                .filter(|o| o.partition_parent_oid == Some(root.oid))
+                .count(),
+            1002
+        );
+        assert_eq!(
+            objects
+                .iter()
+                .filter(|o| o.partition_parent_oid.is_none())
+                .count(),
+            3
+        );
+        assert!(objects
+            .iter()
+            .find(|o| o.name == "inherited_child")
+            .unwrap()
+            .partition_parent_oid
+            .is_none());
+    }
+    let archive_objects = metadata_service::list_objects(
+        &state,
+        &MetadataListObjectsRequest {
+            connection_id: CONN_ID.into(),
+            schema_oids: vec![archive],
+            kinds: vec![ObjectKind::Table],
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        archive_objects.is_empty(),
+        "partitions must only appear under their parent"
+    );
+}
+
 mod editing {
     use super::*;
     use dbpod_lib::application::{edit_service, metadata_service};
@@ -915,7 +1005,7 @@ mod editing {
             &state,
             &ChangesPreviewRequest {
                 connection_id: CONN_ID.into(),
-                result_tab_id: "r".into(),
+                result_tab_id: "t-edit-result".into(),
                 relation_oid: meta.relation_oid,
                 changes: vec![RowChange::Update {
                     row_id: "row-1".into(),
@@ -983,7 +1073,7 @@ mod editing {
             &state,
             &ChangesPreviewRequest {
                 connection_id: CONN_ID.into(),
-                result_tab_id: "r".into(),
+                result_tab_id: "t-edit-result".into(),
                 relation_oid: meta.relation_oid,
                 changes: vec![RowChange::Update {
                     row_id: "row-2".into(),
@@ -1029,7 +1119,7 @@ mod editing {
             &state,
             &ChangesPreviewRequest {
                 connection_id: CONN_ID.into(),
-                result_tab_id: "r".into(),
+                result_tab_id: "t-edit-result".into(),
                 relation_oid: meta.relation_oid,
                 changes: vec![
                     RowChange::Insert {
@@ -1079,7 +1169,7 @@ mod editing {
             &state,
             &ChangesPreviewRequest {
                 connection_id: CONN_ID.into(),
-                result_tab_id: "r".into(),
+                result_tab_id: "t-edit-result".into(),
                 relation_oid: meta.relation_oid,
                 changes: vec![
                     RowChange::Insert {
@@ -1143,7 +1233,7 @@ mod editing {
             &state,
             &ChangesPreviewRequest {
                 connection_id: CONN_ID.into(),
-                result_tab_id: "r".into(),
+                result_tab_id: "t-edit-result".into(),
                 relation_oid: meta.relation_oid,
                 changes: vec![RowChange::Update {
                     row_id: "g".into(),
@@ -1162,11 +1252,12 @@ mod editing {
             &state,
             &ChangesPreviewRequest {
                 connection_id: CONN_ID.into(),
-                result_tab_id: "r".into(),
+                result_tab_id: "t-edit-result".into(),
                 relation_oid: meta.relation_oid,
                 changes: vec![RowChange::Delete {
                     row_id: "d".into(),
                     identity: identity(&meta, 3, Some(xmin)),
+                    original_values: HashMap::new(),
                 }],
             },
         )

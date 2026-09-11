@@ -216,3 +216,19 @@ pub struct ResultValueFetchResponse {
 pub struct ResultReleaseRequest {
     pub result_tab_id: String,
 }
+
+#[derive(Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ResultRowsFetchRequest {
+    pub result_tab_id: String,
+    pub execution_id: String,
+    pub offset: u32,
+}
+
+#[derive(Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ResultRowsFetchResponse {
+    pub rows: Vec<Vec<DbValue>>,
+    pub next_offset: u32,
+    pub has_more: bool,
+}

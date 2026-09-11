@@ -16,6 +16,7 @@ export type EditSnapshot = {
   deletes: Set<number>;
   inserts: InsertDraft[];
   pendingCount: number;
+  locked: boolean;
 };
 
 const EMPTY: EditSnapshot = {
@@ -23,6 +24,7 @@ const EMPTY: EditSnapshot = {
   deletes: new Set(),
   inserts: [],
   pendingCount: 0,
+  locked: false,
 };
 
 /** Per-result-tab edit buffer, outside the React tree (mirrors ResultStore). */
@@ -48,6 +50,7 @@ class EditStore {
   }
 
   setCell(tabId: string, rowIndex: number, column: string, draft: CellDraft | undefined): void {
+    if (this.getSnapshot(tabId).locked) return;
     const s = this.mutable(tabId);
     const updates = new Map(s.updates);
     const row = new Map(updates.get(rowIndex) ?? []);
@@ -59,6 +62,7 @@ class EditStore {
   }
 
   toggleDelete(tabId: string, rowIndex: number): void {
+    if (this.getSnapshot(tabId).locked) return;
     const s = this.mutable(tabId);
     const deletes = new Set(s.deletes);
     if (deletes.has(rowIndex)) deletes.delete(rowIndex);
@@ -67,6 +71,7 @@ class EditStore {
   }
 
   addInsert(tabId: string, cells: Record<string, InsertCell> = {}): string {
+    if (this.getSnapshot(tabId).locked) throw new Error("저장 검증 중에는 편집할 수 없습니다.");
     const s = this.mutable(tabId);
     const draftId = crypto.randomUUID();
     this.commit(tabId, { ...s, inserts: [...s.inserts, { draftId, cells }] });
@@ -74,6 +79,7 @@ class EditStore {
   }
 
   setInsertCell(tabId: string, draftId: string, column: string, cell: InsertCell): void {
+    if (this.getSnapshot(tabId).locked) return;
     const s = this.mutable(tabId);
     this.commit(tabId, {
       ...s,
@@ -84,6 +90,7 @@ class EditStore {
   }
 
   removeInsert(tabId: string, draftId: string): void {
+    if (this.getSnapshot(tabId).locked) return;
     const s = this.mutable(tabId);
     this.commit(tabId, { ...s, inserts: s.inserts.filter((d) => d.draftId !== draftId) });
   }
@@ -91,6 +98,19 @@ class EditStore {
   clear(tabId: string): void {
     this.states.delete(tabId);
     this.emit(tabId);
+  }
+
+  setLocked(tabId: string, locked: boolean): void {
+    this.commit(tabId, { ...this.mutable(tabId), locked });
+  }
+
+  /** Clear resolved conflicts and rebase remaining row-index drafts after removals. */
+  resolveRows(tabId: string, resolved: number[], removed: number[]): void {
+    const s = this.mutable(tabId);
+    const index = (i: number) => i - removed.filter((r) => r < i).length;
+    const updates = new Map([...s.updates].filter(([i]) => !resolved.includes(i)).map(([i, cells]) => [index(i), cells]));
+    const deletes = new Set([...s.deletes].filter((i) => !resolved.includes(i)).map(index));
+    this.commit(tabId, { ...s, updates, deletes });
   }
 
   private mutable(tabId: string): EditSnapshot {

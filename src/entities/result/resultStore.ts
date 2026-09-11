@@ -4,6 +4,7 @@ import type {
   DbValue,
   TransactionState,
 } from "../../generated/ipc-types";
+import { editStore } from "./editStore";
 
 export type ResultStatus = "idle" | "running" | "completed" | "failed" | "cancelled";
 
@@ -21,6 +22,12 @@ export type ResultSnapshot = {
   transactionState?: TransactionState;
   commandTag?: string;
   affectedRows?: number | null;
+  protocolError?: boolean;
+  pageable?: boolean;
+  nextRowOffset?: number;
+  hasMoreRows?: boolean;
+  loadingMore?: boolean;
+  pageError?: string;
 };
 
 const EMPTY: ResultSnapshot = { columns: [], rows: [], status: "idle" };
@@ -35,8 +42,11 @@ class ResultStore {
   private nextSequence = new Map<string, number>();
   private listeners = new Map<string, Set<() => void>>();
 
-  create(resultTabId: string, executedSql?: string): void {
-    this.states.set(resultTabId, { columns: [], rows: [], status: "running", executedSql });
+  create(resultTabId: string, executedSql?: string, pageable = false): void {
+    const edits = editStore.getSnapshot(resultTabId);
+    if (edits.pendingCount || edits.locked) throw new Error("저장하지 않은 변경이 있는 결과는 교체할 수 없습니다.");
+    if (this.states.get(resultTabId)?.status === "running") throw new Error("이미 실행 중인 결과입니다.");
+    this.states.set(resultTabId, { columns: [], rows: [], status: "running", executedSql, pageable, nextRowOffset: 0 });
     this.nextSequence.set(resultTabId, 0);
     this.emit(resultTabId);
   }
@@ -52,14 +62,14 @@ class ResultStore {
   removeRows(resultTabId: string, rowIndexes: number[]): void {
     this.update(resultTabId, (s) => {
       for (const idx of [...rowIndexes].sort((a, b) => b - a)) s.rows.splice(idx, 1);
-      return { ...s, rowCount: s.rows.length };
+      return { ...s, rowCount: (s.rowCount ?? s.rows.length + rowIndexes.length) - rowIndexes.length };
     });
   }
 
   pushRows(resultTabId: string, rows: DbValue[][]): void {
     this.update(resultTabId, (s) => {
       s.rows.push(...rows);
-      return { ...s, rowCount: s.rows.length };
+      return { ...s, rowCount: (s.rowCount ?? s.rows.length - rows.length) + rows.length };
     });
   }
 
@@ -71,13 +81,14 @@ class ResultStore {
     this.update(resultTabId, (s) => ({ ...s, columns }));
   }
 
-  appendRows(resultTabId: string, sequence: number, rows: DbValue[][]): void {
+  appendRows(resultTabId: string, sequence: number, rows: DbValue[][]): boolean {
     const expected = this.nextSequence.get(resultTabId);
-    if (expected === undefined) return; // disposed tab, late chunk
+    if (expected === undefined || this.states.get(resultTabId)?.protocolError) return false; // disposed tab, late chunk
     if (sequence !== expected) {
       this.update(resultTabId, (s) => ({
         ...s,
         status: "failed",
+        protocolError: true,
         error: {
           code: "INTERNAL_ERROR",
           message: `chunk sequence mismatch: expected ${expected}, got ${sequence}`,
@@ -88,13 +99,14 @@ class ResultStore {
           hint: null,
         },
       }));
-      return;
+      return false;
     }
     this.nextSequence.set(resultTabId, expected + 1);
     this.update(resultTabId, (s) => {
       s.rows.push(...rows);
-      return { ...s };
+      return { ...s, nextRowOffset: (s.nextRowOffset ?? 0) + rows.length };
     });
+    return true;
   }
 
   setCommand(resultTabId: string, commandTag: string, affectedRows: number | null): void {
@@ -108,7 +120,20 @@ class ResultStore {
       "status" | "error" | "rowCount" | "truncated" | "durationMs" | "transactionState"
     >,
   ): void {
-    this.update(resultTabId, (s) => ({ ...s, ...terminal }));
+    this.update(resultTabId, (s) => ({ ...s, ...terminal,
+      hasMoreRows: Boolean(s.pageable && !s.protocolError && terminal.status !== "failed" && (terminal.rowCount ?? 0) > (s.nextRowOffset ?? 0)),
+      ...(s.protocolError ? { status: "failed", error: s.error } : {}) }));
+  }
+
+  setPageLoading(resultTabId: string, loadingMore: boolean, pageError?: string): void {
+    this.update(resultTabId, (s) => ({ ...s, loadingMore, pageError }));
+  }
+
+  appendPage(resultTabId: string, page: { rows: DbValue[][]; nextOffset: number; hasMore: boolean }): void {
+    this.update(resultTabId, (s) => {
+      s.rows.push(...page.rows);
+      return { ...s, nextRowOffset: page.nextOffset, hasMoreRows: page.hasMore, loadingMore: false, pageError: undefined };
+    });
   }
 
   getSnapshot(resultTabId: string): ResultSnapshot {
@@ -129,6 +154,7 @@ class ResultStore {
   }
 
   dispose(resultTabId: string): void {
+    editStore.clear(resultTabId);
     this.states.delete(resultTabId);
     this.nextSequence.delete(resultTabId);
     this.emit(resultTabId);

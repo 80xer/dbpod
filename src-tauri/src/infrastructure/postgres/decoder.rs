@@ -1,6 +1,6 @@
 use base64::Engine;
-use sqlx::postgres::types::{PgInterval, PgMoney, PgRange, PgTimeTz};
-use sqlx::postgres::{PgColumn, PgRow, PgTypeInfo, PgTypeKind};
+use sqlx::postgres::types::{PgInterval, PgMoney};
+use sqlx::postgres::{PgColumn, PgRow, PgTypeInfo, PgTypeKind, PgValueFormat};
 use sqlx::{Column, Row, TypeInfo, ValueRef};
 
 use crate::domain::db_value::{ArrayDimension, DbValue, JsonType, TemporalType};
@@ -106,7 +106,7 @@ fn fmt_interval(i: &PgInterval) -> String {
         parts.push(format!(
             "{} day{}",
             i.days,
-            if i.days.abs() == 1 { "" } else { "s" }
+            if i.days.unsigned_abs() == 1 { "" } else { "s" }
         ));
     }
     if i.microseconds != 0 || parts.is_empty() {
@@ -192,21 +192,144 @@ fn decode_numeric_raw(bytes: &[u8]) -> Option<String> {
     })
 }
 
-fn fmt_range<T: std::fmt::Display>(r: PgRange<T>) -> String {
-    use std::ops::Bound;
-    let mut out = String::new();
-    match &r.start {
-        Bound::Included(v) => out.push_str(&format!("[{v}")),
-        Bound::Excluded(v) => out.push_str(&format!("({v}")),
-        Bound::Unbounded => out.push('('),
+fn fmt_time(microseconds: i64) -> Option<String> {
+    match microseconds {
+        86_400_000_000 => Some("24:00:00".into()),
+        0..86_400_000_000 => Some(
+            (chrono::NaiveTime::default() + chrono::Duration::microseconds(microseconds))
+                .format("%H:%M:%S%.f")
+                .to_string(),
+        ),
+        _ => None,
     }
-    out.push(',');
-    match &r.end {
-        Bound::Included(v) => out.push_str(&format!("{v}]")),
-        Bound::Excluded(v) => out.push_str(&format!("{v})")),
-        Bound::Unbounded => out.push(')'),
+}
+
+/// Decode before chrono: PostgreSQL also supports 24:00, infinity, and wider years.
+fn decode_temporal_raw(bytes: &[u8], temporal_type: TemporalType) -> Option<String> {
+    use chrono::Datelike;
+
+    if matches!(temporal_type, TemporalType::Time | TemporalType::Timetz) {
+        let mut value = fmt_time(i64::from_be_bytes(bytes.get(..8)?.try_into().ok()?))?;
+        if temporal_type == TemporalType::Timetz {
+            let offset = i32::from_be_bytes(bytes.get(8..)?.try_into().ok()?);
+            value.push_str(&chrono::FixedOffset::west_opt(offset)?.to_string());
+        } else if bytes.len() != 8 {
+            return None;
+        }
+        return Some(value);
     }
-    out
+    let (offset, min, max) = if temporal_type == TemporalType::Date {
+        (
+            i64::from(i32::from_be_bytes(bytes.try_into().ok()?)),
+            i64::from(i32::MIN),
+            i64::from(i32::MAX),
+        )
+    } else {
+        (
+            i64::from_be_bytes(bytes.try_into().ok()?),
+            i64::MIN,
+            i64::MAX,
+        )
+    };
+    if offset == min || offset == max {
+        return Some(
+            if offset == min {
+                "-infinity"
+            } else {
+                "infinity"
+            }
+            .into(),
+        );
+    }
+    let days = if temporal_type == TemporalType::Date {
+        offset
+    } else {
+        offset.div_euclid(86_400_000_000)
+    };
+    // The Gregorian calendar repeats every 400 years (146097 days). Map into
+    // chrono's safe 2000–2399 interval, then restore the actual year.
+    let date = chrono::NaiveDate::from_ymd_opt(2000, 1, 1)?
+        .checked_add_signed(chrono::Duration::days(days.rem_euclid(146_097)))?;
+    let year = i64::from(date.year()) + days.div_euclid(146_097) * 400;
+    let mut value = format!(
+        "{:04}-{:02}-{:02}",
+        if year <= 0 { 1 - year } else { year },
+        date.month(),
+        date.day()
+    );
+    if temporal_type != TemporalType::Date {
+        value.push_str(&format!(
+            "T{}",
+            fmt_time(offset.rem_euclid(86_400_000_000))?
+        ));
+        if temporal_type == TemporalType::Timestamptz {
+            value.push('Z');
+        }
+    }
+    if year <= 0 {
+        value.push_str(" BC");
+    }
+    Some(value)
+}
+
+fn decode_temporal(row: &PgRow, i: usize, temporal_type: TemporalType) -> Option<DbValue> {
+    let raw = row.try_get_raw(i).ok()?;
+    let value = match raw.format() {
+        PgValueFormat::Text => raw.as_str().ok()?.to_owned(),
+        PgValueFormat::Binary => decode_temporal_raw(raw.as_bytes().ok()?, temporal_type)?,
+    };
+    Some(DbValue::Temporal {
+        temporal_type,
+        value,
+    })
+}
+
+fn decode_range(row: &PgRow, i: usize, elem: &PgTypeInfo) -> Option<String> {
+    let raw = row.try_get_raw(i).ok()?;
+    if raw.format() == PgValueFormat::Text {
+        return raw.as_str().ok().map(str::to_owned);
+    }
+    let (flags, mut bytes) = raw.as_bytes().ok()?.split_first()?;
+    if flags & 0x01 != 0 {
+        return Some("empty".into());
+    }
+    let mut bounds = Vec::with_capacity(2);
+    for unbounded in [0x08, 0x10] {
+        if flags & unbounded != 0 {
+            bounds.push(String::new());
+            continue;
+        }
+        let len = usize::try_from(i32::from_be_bytes(bytes.get(..4)?.try_into().ok()?)).ok()?;
+        bytes = bytes.get(4..)?;
+        let bound = bytes.get(..len)?;
+        bytes = bytes.get(len..)?;
+        let value = match elem.name() {
+            "INT4" => i32::from_be_bytes(bound.try_into().ok()?).to_string(),
+            "INT8" => i64::from_be_bytes(bound.try_into().ok()?).to_string(),
+            "NUMERIC" => decode_numeric_raw(bound)?,
+            "DATE" => decode_temporal_raw(bound, TemporalType::Date)?,
+            "TIMESTAMP" => decode_temporal_raw(bound, TemporalType::Timestamp)?.replace('T', " "),
+            "TIMESTAMPTZ" => decode_temporal_raw(bound, TemporalType::Timestamptz)?
+                .replace('T', " ")
+                .replace('Z', "+00"),
+            _ => return None,
+        };
+        bounds.push(if value.contains(' ') {
+            format!("\"{value}\"")
+        } else {
+            value
+        });
+    }
+    if !bytes.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "{}{},{}{}",
+        if flags & 0x02 != 0 { '[' } else { '(' },
+        bounds[0],
+        bounds[1],
+        if flags & 0x04 != 0 { ']' } else { ')' }
+    ))
 }
 
 fn array_of<T>(values: Vec<Option<T>>, elem_oid: u32, f: impl Fn(T) -> DbValue) -> DbValue {
@@ -279,10 +402,11 @@ fn decode_array(row: &PgRow, i: usize, elem: &PgTypeInfo) -> Option<DbValue> {
 
 fn unknown_fallback(row: &PgRow, i: usize, ti: &PgTypeInfo) -> DbValue {
     let oid = ti.oid().map(|o| o.0).unwrap_or(0);
-    // Try a lossless text representation before giving up.
+    // UTF-8 binary payloads are still wire encodings, not PostgreSQL text.
     let value = row
         .try_get_raw(i)
         .ok()
+        .filter(|raw| raw.format() == PgValueFormat::Text)
         .and_then(|raw| raw.as_str().ok().map(str::to_owned))
         .unwrap_or_else(|| format!("<{}>", ti.name().to_lowercase()));
     DbValue::Unknown {
@@ -316,6 +440,14 @@ fn decode_typed(row: &PgRow, i: usize, ti: &PgTypeInfo, large: &LargeValueStore)
         PgTypeKind::Array(elem) => {
             let elem = elem.clone();
             return decode_array(row, i, &elem).unwrap_or_else(|| unknown_fallback(row, i, ti));
+        }
+        PgTypeKind::Range(elem) => {
+            return decode_range(row, i, elem)
+                .map(|value| DbValue::Range {
+                    value,
+                    range_type: ti.name().to_lowercase(),
+                })
+                .unwrap_or_else(|| unknown_fallback(row, i, ti));
         }
         PgTypeKind::Enum(_) => {
             let value = row
@@ -391,41 +523,11 @@ fn decode_typed(row: &PgRow, i: usize, ti: &PgTypeInfo, large: &LargeValueStore)
                 value: v.to_string(),
             })
             .ok(),
-        "DATE" => row
-            .try_get::<chrono::NaiveDate, _>(i)
-            .map(|v| DbValue::Temporal {
-                temporal_type: TemporalType::Date,
-                value: v.format("%Y-%m-%d").to_string(),
-            })
-            .ok(),
-        "TIME" => row
-            .try_get::<chrono::NaiveTime, _>(i)
-            .map(|v| DbValue::Temporal {
-                temporal_type: TemporalType::Time,
-                value: v.format("%H:%M:%S%.f").to_string(),
-            })
-            .ok(),
-        "TIMETZ" => row
-            .try_get::<PgTimeTz, _>(i)
-            .map(|v| DbValue::Temporal {
-                temporal_type: TemporalType::Timetz,
-                value: format!("{}{}", v.time.format("%H:%M:%S%.f"), v.offset),
-            })
-            .ok(),
-        "TIMESTAMP" => row
-            .try_get::<chrono::NaiveDateTime, _>(i)
-            .map(|v| DbValue::Temporal {
-                temporal_type: TemporalType::Timestamp,
-                value: v.format("%Y-%m-%dT%H:%M:%S%.f").to_string(),
-            })
-            .ok(),
-        "TIMESTAMPTZ" => row
-            .try_get::<chrono::DateTime<chrono::Utc>, _>(i)
-            .map(|v| DbValue::Temporal {
-                temporal_type: TemporalType::Timestamptz,
-                value: v.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true),
-            })
-            .ok(),
+        "DATE" => decode_temporal(row, i, TemporalType::Date),
+        "TIME" => decode_temporal(row, i, TemporalType::Time),
+        "TIMETZ" => decode_temporal(row, i, TemporalType::Timetz),
+        "TIMESTAMP" => decode_temporal(row, i, TemporalType::Timestamp),
+        "TIMESTAMPTZ" => decode_temporal(row, i, TemporalType::Timestamptz),
         "INTERVAL" => row
             .try_get::<PgInterval, _>(i)
             .map(|v| DbValue::Temporal {
@@ -481,38 +583,7 @@ fn decode_typed(row: &PgRow, i: usize, ti: &PgTypeInfo, large: &LargeValueStore)
                 network_type: "macaddr".into(),
             })
             .ok(),
-        "INT4RANGE" => row
-            .try_get::<PgRange<i32>, _>(i)
-            .map(|r| range_value(r, name))
-            .ok(),
-        "INT8RANGE" => row
-            .try_get::<PgRange<i64>, _>(i)
-            .map(|r| range_value(r, name))
-            .ok(),
-        "NUMRANGE" => row
-            .try_get::<PgRange<sqlx::types::BigDecimal>, _>(i)
-            .map(|r| range_value(r, name))
-            .ok(),
-        "DATERANGE" => row
-            .try_get::<PgRange<chrono::NaiveDate>, _>(i)
-            .map(|r| range_value(r, name))
-            .ok(),
-        "TSRANGE" => row
-            .try_get::<PgRange<chrono::NaiveDateTime>, _>(i)
-            .map(|r| range_value(r, name))
-            .ok(),
-        "TSTZRANGE" => row
-            .try_get::<PgRange<chrono::DateTime<chrono::Utc>>, _>(i)
-            .map(|r| range_value(r, name))
-            .ok(),
         _ => None,
     };
     decoded.unwrap_or_else(|| unknown_fallback(row, i, ti))
-}
-
-fn range_value<T: std::fmt::Display>(r: PgRange<T>, type_name: &str) -> DbValue {
-    DbValue::Range {
-        value: fmt_range(r),
-        range_type: type_name.to_lowercase(),
-    }
 }

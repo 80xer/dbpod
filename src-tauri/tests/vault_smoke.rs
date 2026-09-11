@@ -42,7 +42,9 @@ fn profile_save_keeps_secret_out_of_disk() {
     )
     .unwrap();
 
-    // password reachable via keychain only
+    // Check the OS entry directly so a cache cannot hide a failed persisted write.
+    let native = keyring::Entry::new("com.niceinvesting.dbpod", &saved.profile_id).unwrap();
+    assert_eq!(native.get_password().unwrap(), secret);
     assert_eq!(
         keychain::get_password(&saved.profile_id)
             .unwrap()
@@ -67,8 +69,23 @@ fn profile_save_keeps_secret_out_of_disk() {
     assert!(!dbg.contains(secret));
     assert!(dbg.contains("redacted"));
 
+    // Changing a saved password updates both the OS entry and the authorized cache.
+    let updated = "updated-smoke-password";
+    keychain::set_password(&saved.profile_id, updated).unwrap();
+    assert_eq!(native.get_password().unwrap(), updated);
+    assert_eq!(
+        keychain::get_password(&saved.profile_id)
+            .unwrap()
+            .as_deref(),
+        Some(updated)
+    );
+
     // delete removes profile and credential
     connection_service::profile_delete(&state, &saved.profile_id).unwrap();
+    assert!(matches!(
+        native.get_password(),
+        Err(keyring::Error::NoEntry)
+    ));
     assert!(keychain::get_password(&saved.profile_id).unwrap().is_none());
     let json = std::fs::read_to_string(dir.join("profiles.json")).unwrap();
     assert!(!json.contains("vault-smoke"));

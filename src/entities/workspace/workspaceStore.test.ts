@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   emptyWorkspace,
+  getTabGroups,
   workspaceReducer,
   type WorkspaceAction,
   type WorkspaceState,
@@ -11,6 +12,39 @@ function apply(state: WorkspaceState, ...actions: WorkspaceAction[]): WorkspaceS
 }
 
 describe("workspaceReducer", () => {
+  it("keeps tab addition, switching and closing inside independent split groups", () => {
+    let s = apply(emptyWorkspace(),
+      { type: "TAB_ADDED", tabId: "a" },
+      { type: "TAB_ADDED", tabId: "b", split: true },
+      { type: "TAB_ACTIVATED", tabId: "a" },
+      { type: "TAB_ADDED", tabId: "c", split: true },
+    );
+    const layout = () => getTabGroups(s).map((g) => g.tabIds);
+    expect(layout()).toEqual([["a"], ["c"], ["b"]]);
+    expect(s.activeTabId).toBe("c");
+    s = apply(s, { type: "TAB_ADDED", tabId: "d" });
+    expect(layout()).toEqual([["a"], ["c", "d"], ["b"]]);
+    s = apply(s, { type: "TAB_ACTIVATED_BY_INDEX", index: 0 });
+    expect(s.activeTabId).toBe("c");
+    expect(getTabGroups(s).map((g) => g.activeTabId)).toEqual(["a", "c", "b"]);
+    s = apply(s, { type: "TAB_CYCLED", direction: 1 });
+    expect(s.activeTabId).toBe("d");
+    expect(layout()).toEqual([["a"], ["c", "d"], ["b"]]);
+    s = apply(s, { type: "TAB_CLOSED", tabId: "a" });
+    expect(layout()).toEqual([["c", "d"], ["b"]]);
+    s = apply(s, { type: "TAB_CLOSED", tabId: "d" });
+    expect(layout()).toEqual([["c"], ["b"]]);
+    expect(s.activeTabId).toBe("c");
+    s = apply(s, { type: "TAB_CLOSED", tabId: "c" });
+    expect(layout()).toEqual([["b"]]);
+    expect(s.activeTabId).toBe("b");
+    s = apply(s, { type: "TAB_CLOSED", tabId: "b" });
+    expect(s.tabs).toEqual([]);
+    expect(s.activeTabId).toBeUndefined();
+    s = apply(s, { type: "TAB_ADDED", tabId: "restored" });
+    expect(layout()).toEqual([["restored"]]);
+  });
+
   it("adds tabs with sequential default names and activates them", () => {
     const s = apply(
       emptyWorkspace(),
@@ -44,6 +78,32 @@ describe("workspaceReducer", () => {
     expect(s.activeTabId).toBe("a");
     s = apply(s, { type: "TAB_CYCLED", direction: -1 });
     expect(s.activeTabId).toBe("b");
+  });
+
+  it("cycles across split tab edges and moves between each panel's active tab", () => {
+    let s = apply(
+      emptyWorkspace(),
+      { type: "TAB_ADDED", tabId: "a" },
+      { type: "TAB_ADDED", tabId: "c" },
+      { type: "TAB_ADDED", tabId: "b", split: true },
+      { type: "TAB_ADDED", tabId: "d" },
+      { type: "TAB_ACTIVATED", tabId: "c" },
+    );
+    expect(getTabGroups(s).map((group) => group.tabIds)).toEqual([["a", "c"], ["b", "d"]]);
+
+    s = apply(s, { type: "TAB_CYCLED", direction: 1 });
+    expect(s.activeTabId).toBe("b");
+    s = apply(s, { type: "TAB_CYCLED", direction: -1 });
+    expect(s.activeTabId).toBe("c");
+    s = apply(s, { type: "TAB_ACTIVATED", tabId: "d" }, { type: "TAB_CYCLED", direction: 1 });
+    expect(s.activeTabId).toBe("a");
+    s = apply(s, { type: "TAB_CYCLED", direction: -1 });
+    expect(s.activeTabId).toBe("d");
+
+    s = apply(s, { type: "PANEL_CYCLED", direction: -1 });
+    expect(s.activeTabId).toBe("a");
+    s = apply(s, { type: "PANEL_CYCLED", direction: 1 });
+    expect(s.activeTabId).toBe("d");
   });
 
   it("adds result tabs with global sequential numbering and activates them", () => {

@@ -37,7 +37,10 @@ pub async fn export_save(app: AppHandle, request: ExportSaveRequest) -> Result<b
         .filter(|c| !matches!(c, '/' | '\\' | ':'))
         .collect::<String>();
     let picked = tauri::async_runtime::spawn_blocking(move || {
-        app.dialog().file().set_file_name(&name).blocking_save_file()
+        app.dialog()
+            .file()
+            .set_file_name(&name)
+            .blocking_save_file()
     })
     .await
     .map_err(|e| AppError::internal(e.to_string()))?;

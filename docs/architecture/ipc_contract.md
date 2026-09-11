@@ -253,7 +253,7 @@ type ConnectionTestResult = {
 type ConnectionOpenRequest = {
   context: RequestContext
   profileId: string
-  oneTimePassword?: string
+  password: string | null
 }
 
 type ConnectionOpenResponse = {
@@ -295,6 +295,22 @@ type ConnectionStatus = {
 }
 ```
 
+### 6.8 `connection_profile_reorder` (현재 구현)
+
+인자: `{ profileIds: string[] }`, 응답: `void`.
+
+현재 프로필 ID를 원하는 표시 순서대로 모두 한 번씩 전달한다. 누락·중복·알 수 없는 ID는 `INVALID_REQUEST`로 거부한다. Rust가 `profiles.json` 배열 순서를 atomic rename으로 저장하며, 쓰기에 실패하면 메모리 순서도 복원한다. 목록 조회는 이 순서를 그대로 반환한다. 새 프로필은 마지막에 추가하고 기존 프로필 편집은 위치를 유지한다. 순서 변경은 자격 증명을 읽거나 수정하지 않는다.
+
+UI는 HTML drag-and-drop을 사용한다. Tauri 창의 `dragDropEnabled: false`는 네이티브 파일 드롭 처리 대신 웹 드래그 이벤트를 사용하기 위한 설정이다.
+
+### 6.9 `connection_switch_database` (현재 구현)
+
+인자: `{ connectionId: string; database: string }`, 응답: `ConnectionOpenResponse`.
+
+열린 연결의 호스트·사용자·TLS·일회용 자격 증명을 Rust 메모리에서 재사용하고 대상 DB 연결을 먼저 확인한다. 동일한 `connectionId`의 현재 DB를 교체하고 이전 세션·결과·편집 미리보기를 정리한다. 쿼리 실행·트랜잭션이 남아 있으면 `CONNECTION_BUSY`로 차단한다. 실패 시 기존 연결과 결과를 보존하며 저장된 프로필의 기본 DB도 변경하지 않는다. 새 연결 항목을 만들지 않고, 다시 연결할 때도 프로필당 기존 연결을 재사용한다. 연결 응답의 `database`는 실제 현재 DB 이름이다.
+
+UI는 초안 저장 성공 후 전환하며 이전 DB의 결과·테이블 탭·메타데이터 캐시를 정리하고 대상 DB의 SQL 초안을 복원한다. 대기 중인 메타데이터 요청과 편집 저장도 DB 일치 여부를 확인해 이전 DB의 작업이 새 DB에 적용되지 않도록 한다.
+
 ## 7. Certificate import
 
 ### `credential_import_certificate`
@@ -320,6 +336,12 @@ type CertificateImportResponse = {
 private key path와 내용은 frontend에 반환하지 않는다.
 
 ## 8. Metadata
+
+### `metadata_list_databases` (현재 구현)
+
+인자: `{ connectionId: string }`, 응답: `Array<{ name: string; canConnect: boolean }>`.
+
+`pg_database`의 전체 목록을 이름순으로 반환한다. `canConnect`는 DB의 연결 허용 상태와 현재 사용자의 CONNECT 권한을 반영한다. 실제 전환 시 인증·서버 연결 제한은 PostgreSQL이 최종 검사한다.
 
 ### 8.1 `metadata_list_schemas`
 
@@ -353,12 +375,18 @@ type DatabaseObjectSummary = {
   schema: string
   name: string
   kind: string
+  partitionParentOid: number | null
+  functionArguments?: string
   canSelect?: boolean
   canInsert?: boolean
   canUpdate?: boolean
   canDelete?: boolean
 }
 ```
+
+현재 구현은 최상위 테이블·뷰 최대 1,000개와 그 파티션 계층을 함께 반환한다. `partitionParentOid`는 직계 부모 OID이며 일반 테이블·뷰·함수는 `null`이다. 파티션은 부모 아래에만 나타나고, 다른 스키마의 파티션도 부모 응답에 포함된다. 일반 `INHERITS` 테이블은 독립 객체로 유지한다. 탐색기는 기본적으로 파티션을 접고, 검색 시 일치하는 자식과 부모 경로를 함께 표시한다.
+
+스키마 아래 `Tables`·`Functions` 폴더를 따로 두고 펼칠 때 해당 종류만 조회한다. `Functions`는 일반·윈도 함수와 프로시저를 반환하고 `functionArguments`에 식별용 인자 목록을 담아 오버로드를 구분한다. 함수·프로시저를 클릭하면 읽기 전용 정의 코드 탭을 열며 같은 OID의 열린 탭을 재사용한다.
 
 ### 8.3 `metadata_get_table`
 
@@ -376,6 +404,20 @@ type TableMetadata = {
   rowLevelSecurity: boolean
 }
 ```
+
+### 8.4 `metadata_get_routine_definition`
+
+```ts
+// IPC 최상위 인자
+type MetadataGetRoutineDefinitionArgs = {
+  connectionId: string
+  routineOid: number
+}
+
+type MetadataGetRoutineDefinitionResponse = string
+```
+
+현재 연결 DB의 `pg_proc`에서 OID로 함수·윈도 함수·프로시저를 찾아 `pg_get_functiondef` 결과를 반환한다. 해당 객체가 없으면 오류를 반환한다. UI는 정의 SQL을 읽기 전용으로 표시하고 새로고침·실패 시 재시도를 제공한다. DB 전환 시 정의 탭과 조회 캐시를 정리한다.
 
 ## 9. Query session
 
@@ -435,7 +477,7 @@ Permission: `dbpod:query-execute`
 - Result Tab ID format
 - SQL byte length
 - 한 session의 active execution
-- maxRows/timeout 범위
+- timeout 범위 (maxRows는 쿼리 페이지 조회에 미적용)
 - connection state
 
 ### 10.2 `query_ack_chunk`
@@ -479,7 +521,7 @@ type QuerySessionForceCloseRequest = {
 
 다른 session은 닫지 않는다.
 
-## 11. Large Result Value
+## 11. Result retrieval
 
 ### 11.1 `result_value_fetch`
 
@@ -507,7 +549,25 @@ type ResultReleaseRequest = {
 }
 ```
 
-frontend dispose와 Rust value handle을 함께 정리한다.
+frontend dispose와 Rust의 보관 결과·value handle을 함께 정리한다.
+
+### 11.3 `result_rows_fetch`
+
+```ts
+type ResultRowsFetchRequest = {
+  resultTabId: string
+  executionId: string
+  offset: number
+}
+
+type ResultRowsFetchResponse = {
+  rows: DbValue[][]
+  nextOffset: number
+  hasMore: boolean
+}
+```
+
+`query_execute`는 처음 200행만 Channel로 전송하고, 메모리 예산 범위의 나머지 행을 Rust에 보관한다. 고정 행 수 제한은 없으며, 호환용 `maxRows` 필드와 기존 프로필의 500행 설정은 적용하지 않는다. SQL은 한 번 실행하며 서버의 최종 성공·실패 확인까지 결과를 소비한다. UI는 terminal 이벤트의 `rowCount`가 표시한 행 수보다 많으면 스크롤 끝 근처에서 이 명령으로 최대 200행씩 가져온다. 넓은 행은 1MiB 전송 한도를 우선한다. `offset`은 보관 결과의 위치이며, UI에서 행을 삭제해도 다음 조회 위치는 바뀌지 않는다. 교체된 `executionId`, 닫힌 결과, 범위 밖 offset은 거부한다. 전체 복사·내보내기도 같은 보관 결과를 읽으며 SQL을 재실행하지 않는다.
 
 ## 12. Data editing
 
@@ -601,9 +661,9 @@ Permission: `dbpod:history-write`
 | 항목 | 제한 |
 | --- | --- |
 | SQL text | 1MiB |
-| Query maxRows | 10,000 |
+| Query row count | 고정 제한 없음 (메모리 예산 적용) |
 | Query timeout | 1시간 |
-| chunk rows | 기본 100 |
+| query result page rows | 200 (Table Data stream chunk: 첫 50 / 후속 100) |
 | chunk soft bytes | 1MiB |
 | paste cells | 10,000 |
 | edit batch rows | 500 |
@@ -641,3 +701,12 @@ diagnostic에는 ID, byte length, count, duration과 error code만 기록한다.
 - closed Result Tab의 valueHandle을 사용할 수 없다.
 - request size와 page limit이 모든 boundary에서 검증된다.
 
+
+## 구현 바인딩과 현재 확정된 추가 제약 (2026-09-08)
+
+위 타입은 제품 계약의 목표 범위를 포함한다. 현재 실행 가능한 command의 정확한 필드 집합은 Rust domain에서 생성하는 `src/generated/ipc-types.ts`가 기준이며, `RequestContext`·capabilities 등 미구현 항목은 이 바인딩에 없다.
+
+- `ConnectionOpenRequest.password`: 일회용 비밀번호, null이면 저장된 자격 증명 사용. 응답·profile·mutation cache에 비밀번호를 저장하지 않는다.
+- `RowChange.Delete.originalValues`: UPDATE와 마찬가지로 필수. xmin이 없으면 표시된 원본 값으로 동시 변경을 검사한다.
+- 변경 preview는 10분 뒤 만료하고 resultRelease/connectionClose/결과 재실행에 따라 폐기된다. resultTabId와 connectionId 소유권이 일치해야 한다.
+- terminal은 서버 실행 결과가 확인된 후 한 번만 보낸다. 연결 유실로 확정할 수 없으면 QUERY_OUTCOME_UNKNOWN/COMMIT_OUTCOME_UNKNOWN을 반환한다.

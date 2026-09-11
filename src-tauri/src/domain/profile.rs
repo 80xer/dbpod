@@ -122,10 +122,18 @@ pub struct ConnectionTestResult {
     pub is_superuser: bool,
 }
 
-#[derive(Debug, Deserialize, TS)]
+#[derive(Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectionOpenRequest {
     pub profile_id: String,
+    #[serde(default)]
+    pub password: Option<String>,
+}
+
+impl std::fmt::Debug for ConnectionOpenRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ConnectionOpenRequest(<redacted>)")
+    }
 }
 
 #[derive(Debug, Serialize, TS)]
@@ -133,6 +141,7 @@ pub struct ConnectionOpenRequest {
 pub struct ConnectionOpenResponse {
     pub connection_id: String,
     pub profile_id: String,
+    pub database: String,
     pub server_version: String,
 }
 

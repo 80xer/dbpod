@@ -1,24 +1,28 @@
-import { createRootRoute, createRoute, createRouter } from "@tanstack/react-router";
+import { createRootRoute, createRoute, createRouter, lazyRouteComponent } from "@tanstack/react-router";
 import { AppShell } from "../shell/AppShell";
-import { WorkspacePage } from "../shell/WorkspacePage";
-import { ConnectionsPage } from "../../features/connections/ConnectionsPage";
 
 const rootRoute = createRootRoute({ component: AppShell });
 
 const connectionsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
-  component: ConnectionsPage,
+  component: lazyRouteComponent(() => import("../../features/connections/ConnectionsPage"), "ConnectionsPage"),
+});
+
+const settingsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/settings",
+  component: lazyRouteComponent(() => import("../../features/settings/SettingsPage"), "SettingsPage"),
 });
 
 // The path carries only an opaque connectionId — never SQL or credentials.
 const workspaceRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/workspace/$connectionId",
-  component: WorkspacePage,
+  component: lazyRouteComponent(() => import("../shell/WorkspacePage"), "WorkspacePage"),
 });
 
-const routeTree = rootRoute.addChildren([connectionsRoute, workspaceRoute]);
+const routeTree = rootRoute.addChildren([connectionsRoute, settingsRoute, workspaceRoute]);
 
 export const router = createRouter({ routeTree });
 

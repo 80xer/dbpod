@@ -57,6 +57,20 @@ describe("statementAt", () => {
     expect(statementAt(sql, sql.indexOf("2"))?.sql).toBe("select 2");
   });
 
+  it("selects the second multiline query after blank lines", () => {
+    const input = `select *
+from  cms.fnn_fy_his;
+
+
+select *
+from   ext.rpt_rcv_evnt rre
+where  stk_cd = 'A005930'
+order by rpt_std_dt;`;
+    expect(statementAt(input, input.indexOf("A005930"))?.sql).toBe(
+      "select *\nfrom   ext.rpt_rcv_evnt rre\nwhere  stk_cd = 'A005930'\norder by rpt_std_dt",
+    );
+  });
+
   it("returns the first statement at position 0", () => {
     expect(statementAt(sql, 0)?.sql).toBe("select 1");
   });

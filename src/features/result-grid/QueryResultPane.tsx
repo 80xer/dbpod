@@ -44,6 +44,7 @@ export function QueryResultPane({
       )}
       <div className="min-h-0 flex-1">
         <ResultGrid
+          key={`${resultTabId}:${snapshot.executionId ?? "pending"}`}
           resultTabId={resultTabId}
           edit={editability?.editable ? { editableColumns: editability.editableColumns } : undefined}
         />

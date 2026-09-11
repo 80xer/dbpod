@@ -1,6 +1,6 @@
 # Contributing to DBPod
 
-DBPod는 아직 MVP 구현 전 단계다. 구현은 README와 `docs/` 명세를 기준으로 진행한다.
+DBPod는 macOS 데스크톱 MVP 구현 단계다. [현재 검증 범위](docs/plan/progress.md)와 README, `docs/` 명세를 기준으로 변경한다.
 
 ## 개발 원칙
 
@@ -17,10 +17,10 @@ DBPod는 아직 MVP 구현 전 단계다. 구현은 README와 `docs/` 명세를 
 - pnpm
 - Rust stable
 - Tauri 2 플랫폼별 prerequisite
-- PostgreSQL 16 또는 18
+- Docker로 실행 가능한 PostgreSQL 17 (현재 통합 테스트 대상)
 - Docker 또는 호환 container runtime
 
-프로젝트 scaffold 후 표준 script는 다음 이름을 제공해야 한다.
+현재 제공하는 개발·검증 명령:
 
 ```bash
 pnpm install --frozen-lockfile
@@ -29,16 +29,15 @@ pnpm tauri dev
 pnpm lint
 pnpm typecheck
 pnpm test
-pnpm test:e2e
 pnpm build
 ```
 
 Rust:
 
 ```bash
-cargo fmt --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-features
+cargo fmt --manifest-path src-tauri/Cargo.toml --check
+cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
 ## 변경 절차
@@ -66,7 +65,6 @@ Rust:
 - `application`: use case
 - `domain`: framework-independent model/rule
 - `infrastructure`: SQLx/persistence/platform
-- `security`: vault/redaction/capability
 
 dependency 규칙은 [`docs/architecture/architecture.md`](docs/architecture/architecture.md)를 따른다.
 

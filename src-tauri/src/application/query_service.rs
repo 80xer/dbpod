@@ -1,7 +1,6 @@
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use sqlx::Connection;
 use uuid::Uuid;
 
 use crate::domain::events::*;
@@ -61,6 +60,15 @@ pub async fn session_close(
                 .find(|(_, h)| h.session_id == req.session_id)
                 .map(|(k, _)| k.clone())
             {
+                let h = &ws.sessions[&tab_id];
+                if !req.rollback_open_transaction
+                    && (h.busy.load(Ordering::Acquire)
+                        || *h.transaction.lock().unwrap() != TransactionState::Idle)
+                {
+                    return Err(AppError::invalid_request(
+                        "confirm rollback before closing an active session",
+                    ));
+                }
                 found = ws.sessions.remove(&tab_id);
                 break;
             }
@@ -87,7 +95,21 @@ pub async fn session_close(
         })
         .await
         .map_err(|_| AppError::internal("session already gone"))?;
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), rx).await;
+    tokio::time::timeout(std::time::Duration::from_secs(5), rx)
+        .await
+        .map_err(|_| AppError::internal("session close timed out"))?
+        .map_err(|_| AppError::internal("session closed without confirmation"))?;
+    let ids: Vec<String> = state
+        .large_values
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(_, store)| store.query_tab_id == handle.query_tab_id)
+        .map(|(id, _)| id.clone())
+        .collect();
+    for result_tab_id in ids {
+        result_release(state, &ResultReleaseRequest { result_tab_id })?;
+    }
     Ok(())
 }
 
@@ -96,13 +118,23 @@ pub fn execute(
     req: QueryExecuteRequest,
     sink: EventSink,
 ) -> Result<ExecutionAccepted, AppError> {
+    execute_with_paging(state, req, sink, false)
+}
+
+pub fn execute_with_paging(
+    state: &AppState,
+    req: QueryExecuteRequest,
+    sink: EventSink,
+    paged: bool,
+) -> Result<ExecutionAccepted, AppError> {
     if req.sql.trim().is_empty() {
         return Err(AppError::invalid_request("sql is empty"));
     }
     if req.sql.len() > MAX_SQL_BYTES {
         return Err(AppError::invalid_request("sql exceeds 1 MiB"));
     }
-    if req.max_rows == 0 || req.max_rows > 10_000 {
+    // Paged queries use retained-byte budgets, not the legacy profile row cap.
+    if !paged && (req.max_rows == 0 || req.max_rows > 10_000) {
         return Err(AppError::invalid_request("maxRows out of range"));
     }
     if req.timeout_ms < 1_000 || req.timeout_ms > 3_600_000 {
@@ -130,22 +162,40 @@ pub fn execute(
             .ok_or_else(|| AppError::invalid_request("unknown session"))?
             .clone();
 
+        if let Some(store) = state.large_values.lock().unwrap().get(&req.result_tab_id) {
+            if store.connection_id != req.connection_id || store.query_tab_id != req.query_tab_id {
+                return Err(AppError::invalid_request(
+                    "result belongs to another session",
+                ));
+            }
+        }
         if handle.busy.swap(true, Ordering::AcqRel) {
             return Err(AppError::new(
                 "QUERY_ALREADY_RUNNING",
                 "this query tab already has a running execution",
             ));
         }
+        state
+            .change_sets
+            .lock()
+            .unwrap()
+            .retain(|_, set| set.result_tab_id != req.result_tab_id);
         // Fresh large-value store per execution; replacing a result tab drops
         // the previous execution's handles.
-        let large = Arc::new(LargeValueStore::default());
+        let mut large = LargeValueStore::owned(
+            req.connection_id.clone(),
+            req.query_tab_id.clone(),
+            state.retained_usage.clone(),
+        );
+        large.paged = paged;
+        let large = Arc::new(large);
         state
             .large_values
             .lock()
             .unwrap()
             .insert(req.result_tab_id.clone(), large.clone());
         let execution = Arc::new(ExecutionState::new(
-            Uuid::new_v4().to_string(),
+            large.execution_id.clone(),
             session_id.clone(),
             req.connection_id.clone(),
             handle.backend_pid.clone(),
@@ -202,19 +252,31 @@ pub async fn table_data_execute(
     )
     .await?;
 
-    let mut order = String::new();
+    let mut order_columns = Vec::new();
     if let Some(att) = req.sort_attribute {
         let col = meta
             .columns
             .iter()
             .find(|c| c.attribute_number == att)
             .ok_or_else(|| AppError::invalid_request("unknown sort column"))?;
-        order = format!(
-            " ORDER BY {} {}",
+        order_columns.push(format!(
+            "{} {}",
             quote_ident(&col.name),
             if req.sort_descending { "DESC" } else { "ASC" }
-        );
+        ));
     }
+    for att in &meta.primary_key {
+        if Some(*att) != req.sort_attribute {
+            if let Some(col) = meta.columns.iter().find(|c| c.attribute_number == *att) {
+                order_columns.push(quote_ident(&col.name));
+            }
+        }
+    }
+    let order = if order_columns.is_empty() {
+        String::new()
+    } else {
+        format!(" ORDER BY {}", order_columns.join(", "))
+    };
     let is_base_table = meta.kind == "table" || meta.kind == "partitioned-table";
     let xmin_sel = if is_base_table {
         "t.xmin::text AS __dbpod_xmin, "
@@ -261,12 +323,41 @@ pub fn result_value_fetch(
     })
 }
 
-pub fn result_release(state: &AppState, req: &ResultReleaseRequest) -> Result<(), AppError> {
-    state
+pub fn result_rows_fetch(
+    state: &AppState,
+    req: &ResultRowsFetchRequest,
+) -> Result<ResultRowsFetchResponse, AppError> {
+    let store = state
         .large_values
         .lock()
         .unwrap()
-        .remove(&req.result_tab_id);
+        .get(&req.result_tab_id)
+        .cloned()
+        .ok_or_else(|| AppError::invalid_request("unknown result tab"))?;
+    store.read_rows(&req.execution_id, req.offset)
+}
+
+pub fn result_release(state: &AppState, req: &ResultReleaseRequest) -> Result<(), AppError> {
+    let mut stores = state.large_values.lock().unwrap();
+    if let Some(store) = stores.get(&req.result_tab_id) {
+        if state
+            .executions
+            .lock()
+            .unwrap()
+            .values()
+            .any(|e| !e.is_terminal() && Arc::ptr_eq(&e.large, store))
+        {
+            return Err(AppError::invalid_request(
+                "cancel execution before releasing its result",
+            ));
+        }
+    }
+    stores.remove(&req.result_tab_id);
+    state
+        .change_sets
+        .lock()
+        .unwrap()
+        .retain(|_, set| set.result_tab_id != req.result_tab_id);
     Ok(())
 }
 
@@ -306,34 +397,7 @@ pub async fn cancel(
     }
     exec.cancel.cancel();
 
-    // Ask the server to abort the backend via the control connection.
-    let pid = exec.backend_pid.load(Ordering::Acquire);
-    if pid != 0 {
-        let control_and_opts = {
-            let workspaces = state.workspaces.lock().unwrap();
-            workspaces
-                .get(&exec.connection_id)
-                .map(|ws| (ws.control.clone(), ws.connect_opts.clone()))
-        };
-        if let Some((control, opts)) = control_and_opts {
-            let mut guard = control.lock().await;
-            if guard.is_none() {
-                *guard = sqlx::PgConnection::connect_with(&opts).await.ok();
-            }
-            if let Some(conn) = guard.as_mut() {
-                let result: Result<bool, _> = sqlx::query_scalar("SELECT pg_cancel_backend($1)")
-                    .bind(pid)
-                    .fetch_one(&mut *conn)
-                    .await;
-                if result.is_err() {
-                    // Control connection may be stale; drop it so the next use reconnects.
-                    if let Some(c) = guard.take() {
-                        let _ = c.close().await;
-                    }
-                }
-            }
-        }
-    }
+    // The owning actor sends cancellation over a dedicated connection and confirms the server outcome.
     Ok(QueryCancelResponse {
         state: "cancel-requested".into(),
     })

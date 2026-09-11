@@ -33,6 +33,10 @@ describe("resultStore", () => {
     const s = resultStore.getSnapshot(tab);
     expect(s.status).toBe("failed");
     expect(s.error?.code).toBe("INTERNAL_ERROR");
+    resultStore.setTerminal(tab, { status: "completed" });
+    expect(resultStore.getSnapshot(tab).status).toBe("failed");
+    expect(resultStore.appendRows(tab, 0, [row(2)])).toBe(false);
+    expect(resultStore.getSnapshot(tab).rows).toHaveLength(0);
   });
 
   it("dispose frees rows and later chunks are ignored", () => {

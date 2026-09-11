@@ -1,1 +1,163 @@
 @import "tailwindcss";
+
+:root {
+  --app-font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --app-font-size: 16px;
+  --syntax-keyword: #6d28d9;
+  --syntax-atom: #be123c;
+  --syntax-string: #047857;
+  --syntax-number: #b45309;
+  --syntax-comment: #6b7280;
+  --syntax-type: #0369a1;
+  --syntax-name: #1f2937;
+  --syntax-operator: #374151;
+  --syntax-selection-bg: #93c5fd;
+  font-family: var(--app-font-family);
+  font-size: var(--app-font-size);
+}
+
+body,
+button,
+input,
+select,
+textarea,
+dialog {
+  font-family: inherit;
+}
+
+body,
+button,
+input,
+select,
+textarea,
+dialog {
+  font-size: inherit;
+}
+
+html[data-theme="dark"] body {
+  background: #030712;
+  color: #f3f4f6;
+}
+
+html[data-theme="dark"] {
+  --syntax-keyword: #c4b5fd;
+  --syntax-atom: #fda4af;
+  --syntax-string: #86efac;
+  --syntax-number: #fcd34d;
+  --syntax-comment: #9ca3af;
+  --syntax-type: #7dd3fc;
+  --syntax-name: #e5e7eb;
+  --syntax-operator: #d1d5db;
+  --syntax-selection-bg: #1e3a8a;
+}
+
+html[data-theme="dark"] .bg-white,
+html[data-theme="dark"] dialog {
+  background-color: #111827;
+  color: #f3f4f6;
+}
+
+html[data-theme="dark"] .bg-gray-50 { background-color: #1f2937; }
+html[data-theme="dark"] .bg-gray-100 { background-color: #374151; }
+html[data-theme="dark"] .bg-gray-200 { background-color: #4b5563; }
+html[data-theme="dark"] .hover\:bg-gray-50:hover { background-color: #1f2937; }
+html[data-theme="dark"] .hover\:bg-gray-100:hover { background-color: #374151; }
+html[data-theme="dark"] .hover\:bg-gray-200:hover,
+html[data-theme="dark"] .hover\:bg-gray-300:hover { background-color: #4b5563; }
+html[data-theme="dark"] .text-gray-900,
+html[data-theme="dark"] .text-gray-800 { color: #f3f4f6; }
+html[data-theme="dark"] .text-gray-700,
+html[data-theme="dark"] .text-gray-600 { color: #d1d5db; }
+html[data-theme="dark"] .text-gray-500 { color: #9ca3af; }
+html[data-theme="dark"] .text-gray-400 { color: #9ca3af; }
+html[data-theme="dark"] .text-gray-300 { color: #6b7280; }
+html[data-theme="dark"] .border-gray-100,
+html[data-theme="dark"] .border-gray-200 { border-color: #374151; }
+html[data-theme="dark"] .border-gray-300 { border-color: #4b5563; }
+html[data-theme="dark"] .divide-gray-300 > :not(:last-child) { border-color: #4b5563; }
+
+html[data-theme="dark"] input,
+html[data-theme="dark"] select,
+html[data-theme="dark"] textarea {
+  background-color: #111827;
+  color: #f3f4f6;
+}
+
+html[data-theme="dark"] [class*="bg-blue-50"] { background-color: #172554; }
+html[data-theme="dark"] [class*="bg-green-50"] { background-color: #052e16; }
+html[data-theme="dark"] [class*="bg-orange-50"] { background-color: #431407; }
+html[data-theme="dark"] [class*="bg-amber-50"] { background-color: #451a03; }
+html[data-theme="dark"] [class*="bg-red-50"] { background-color: #450a0a; }
+html[data-theme="dark"] .bg-blue-100 { background-color: #1e3a8a; }
+html[data-theme="dark"] .bg-green-100 { background-color: #14532d; }
+html[data-theme="dark"] .bg-orange-100 { background-color: #7c2d12; }
+html[data-theme="dark"] .bg-amber-100 { background-color: #78350f; }
+html[data-theme="dark"] .bg-red-100 { background-color: #7f1d1d; }
+html[data-theme="dark"] .text-blue-700,
+html[data-theme="dark"] .text-blue-800 { color: #93c5fd; }
+html[data-theme="dark"] .text-green-700,
+html[data-theme="dark"] .text-green-800 { color: #86efac; }
+html[data-theme="dark"] .text-orange-800 { color: #fdba74; }
+html[data-theme="dark"] .text-amber-800 { color: #fcd34d; }
+html[data-theme="dark"] .text-red-600,
+html[data-theme="dark"] .text-red-700,
+html[data-theme="dark"] .text-red-800 { color: #fca5a5; }
+
+html[data-theme="dark"] .cm-editor {
+  background: #111827;
+  color: #e5e7eb;
+}
+
+html[data-theme="dark"] .cm-gutters {
+  background: #1f2937;
+  border-color: #374151;
+  color: #9ca3af;
+}
+
+html[data-theme="dark"] .cm-activeLine,
+html[data-theme="dark"] .cm-activeLineGutter { background: #1e293b; }
+html .cm-selectionBackground { background: var(--syntax-selection-bg) !important; }
+html .dbpod-editor-has-selection .cm-activeLine { background: transparent !important; }
+html .dbpod-editor-has-selection .cm-activeLineGutter { background: transparent !important; }
+html[data-theme="dark"] .cm-cursor,
+html[data-theme="dark"] .cm-dropCursor { border-left-color: #f9fafb !important; }
+html[data-theme="dark"] .cm-tooltip-autocomplete {
+  background: #111827;
+  color: #d1d5db;
+  border-color: #4b5563;
+}
+html[data-theme="dark"] .cm-tooltip-autocomplete .cm-completionOption {
+  color: #d1d5db;
+}
+html[data-theme="dark"] .cm-tooltip-autocomplete .cm-completionDetail {
+  color: #9ca3af;
+}
+button[aria-label$="복사"] {
+  font-size: 0;
+  line-height: 1;
+}
+button[aria-label$="복사"]::before {
+  content: "⧉";
+  font-size: 14px;
+}
+[aria-label="AI 채팅 패널"] .group > div > code {
+  display: block;
+  overflow-x: auto;
+  margin: 0.5rem 0;
+  border: 1px solid #374151;
+  border-radius: 0.5rem;
+  background: #111827;
+  padding: 0.75rem;
+  color: #f3f4f6;
+}
+[aria-label="AI 채팅 패널"] .hljs-keyword,
+[aria-label="AI 채팅 패널"] .hljs-operator,
+[aria-label="AI 채팅 패널"] .hljs-type { color: #c4b5fd; }
+[aria-label="AI 채팅 패널"] .hljs-string,
+[aria-label="AI 채팅 패널"] .hljs-quote { color: #86efac; }
+[aria-label="AI 채팅 패널"] .hljs-number,
+[aria-label="AI 채팅 패널"] .hljs-literal { color: #fcd34d; }
+[aria-label="AI 채팅 패널"] .hljs-comment { color: #9ca3af; }
+[aria-label="AI 채팅 패널"] .hljs-title,
+[aria-label="AI 채팅 패널"] .hljs-built_in,
+[aria-label="AI 채팅 패널"] .hljs-name { color: #7dd3fc; }

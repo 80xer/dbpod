@@ -23,9 +23,9 @@ export type TlsStatus = { enabled: boolean, mode: string, };
 
 export type ConnectionTestResult = { serverVersion: string, latencyMs: number, tls: TlsStatus, currentUser: string, database: string, isSuperuser: boolean, };
 
-export type ConnectionOpenRequest = { profileId: string, };
+export type ConnectionOpenRequest = { profileId: string, password: string | null, };
 
-export type ConnectionOpenResponse = { connectionId: string, profileId: string, serverVersion: string, };
+export type ConnectionOpenResponse = { connectionId: string, profileId: string, database: string, serverVersion: string, };
 
 export type ConnectionCloseRequest = { connectionId: string, };
 
@@ -83,7 +83,13 @@ data: string, eof: boolean, };
 
 export type ResultReleaseRequest = { resultTabId: string, };
 
+export type ResultRowsFetchRequest = { resultTabId: string, executionId: string, offset: number, };
+
+export type ResultRowsFetchResponse = { rows: Array<Array<DbValue>>, nextOffset: number, hasMore: boolean, };
+
 export type MetadataListSchemasRequest = { connectionId: string, includeSystem: boolean, };
+
+export type DatabaseInfo = { name: string, canConnect: boolean, };
 
 export type SchemaInfo = { oid: number, name: string, isSystem: boolean, };
 
@@ -91,11 +97,13 @@ export type ObjectKind = "table" | "view" | "materialized-view" | "function" | "
 
 export type MetadataListObjectsRequest = { connectionId: string, schemaOids: Array<number>, kinds: Array<ObjectKind>, };
 
-export type DatabaseObjectSummary = { oid: number, schema: string, name: string, kind: ObjectKind, canSelect: boolean | null, canInsert: boolean | null, canUpdate: boolean | null, canDelete: boolean | null, };
+export type MetadataDropObjectRequest = { connectionId: string, objectOid: number, kind: ObjectKind, };
+
+export type DatabaseObjectSummary = { oid: number, schema: string, name: string, kind: ObjectKind, functionArguments?: string, partitionParentOid: number | null, canSelect: boolean | null, canInsert: boolean | null, canUpdate: boolean | null, canDelete: boolean | null, };
 
 export type MetadataGetTableRequest = { connectionId: string, relationOid: number, };
 
-export type TableColumnMetadata = { attributeNumber: number, name: string, pgTypeOid: number, pgTypeName: string, nullable: boolean, defaultExpr: string | null, isGenerated: boolean, isPrimaryKey: boolean, };
+export type TableColumnMetadata = { attributeNumber: number, name: string, pgTypeOid: number, pgTypeName: string, nullable: boolean, defaultExpr: string | null, comment: string | null, isGenerated: boolean, isPrimaryKey: boolean, };
 
 export type TableMetadata = { relationOid: number, schema: string, name: string, 
 /**
@@ -113,9 +121,9 @@ export type TableDataExecuteRequest = { connectionId: string, queryTabId: string
  */
 sortAttribute: number | null, sortDescending: boolean, limit: number, offset: number, };
 
-export type TabSnapshot = { title: string, sql: string, };
+export type TabSnapshot = { title: string, sql: string, id: string | null, };
 
-export type ConnectionSnapshot = { profileId: string, activeTabIndex: number | null, tabs: Array<TabSnapshot>, };
+export type ConnectionSnapshot = { profileId: string, database: string | null, activeTabIndex: number | null, tabs: Array<TabSnapshot>, tabGroups: Array<TabGroupSnapshot>, };
 
 export type WorkspaceSnapshot = { version: number, connections: Array<ConnectionSnapshot>, };
 
@@ -125,7 +133,7 @@ export type PrimaryKeyValue = { attributeNumber: number, columnName: string, val
 
 export type RowIdentity = { relationOid: number, primaryKey: Array<PrimaryKeyValue>, xmin: string | null, };
 
-export type RowChange = { "operation": "update", rowId: string, identity: RowIdentity, originalValues: { [key in string]: DbValue }, changes: { [key in string]: DbValue }, } | { "operation": "insert", rowId: string, values: { [key in string]: InsertCellDraft }, } | { "operation": "delete", rowId: string, identity: RowIdentity, };
+export type RowChange = { "operation": "update", rowId: string, identity: RowIdentity, originalValues: { [key in string]: DbValue }, changes: { [key in string]: DbValue }, } | { "operation": "insert", rowId: string, values: { [key in string]: InsertCellDraft }, } | { "operation": "delete", rowId: string, identity: RowIdentity, originalValues: { [key in string]: DbValue }, };
 
 export type ChangesPreviewRequest = { connectionId: string, resultTabId: string, relationOid: number, changes: Array<RowChange>, };
 

@@ -52,6 +52,7 @@ pub enum RowChange {
     Delete {
         row_id: String,
         identity: RowIdentity,
+        original_values: HashMap<String, DbValue>,
     },
 }
 

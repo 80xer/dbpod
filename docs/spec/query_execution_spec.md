@@ -154,7 +154,7 @@ type QueryExecuteRequest = {
 제약:
 
 - `sql`: UTF-8, 기본 최대 1MiB
-- `maxRows`: 1~10,000, 기본 500
+- `maxRows`: 호환용 필드. 쿼리 UI는 `0`을 보내며 `query_execute`의 페이지 조회에서는 이 값으로 행 수를 제한하지 않는다. 내부 Table Data stream만 1~10,000 범위를 사용한다.
 - `timeoutMs`: 1,000~3,600,000, 기본 60,000
 - `requestId`: UI retry 중복 접수 방지용 UUID
 - `connectionId`, `queryTabId`, `resultTabId`: Rust가 발급하거나 검증한 opaque ID
@@ -240,8 +240,9 @@ type QueryStreamEvent =
 
 ### 7.3 chunk
 
-- 기본 chunk: 100행
-- 첫 화면 latency를 줄이기 위해 첫 chunk는 최대 50행
+- 쿼리 결과: 최초 200행만 Channel로 전송하고 나머지는 Rust의 보관 결과에서 스크롤 시 최대 200행씩 가져온다.
+- Table Data stream: 첫 chunk 최대 50행, 후속 chunk 100행. 기존 페이지 단위 조회를 유지한다.
+- 쿼리의 `completed.rowCount`는 보관한 전체 행 수이며, 화면에 가져온 행 수와 구분한다. 추가 조회는 SQL을 재실행하지 않는다.
 - 한 chunk 직렬화 크기 soft limit: 1MiB
 - 큰 cell이 있으면 행 수보다 byte limit을 우선한다.
 - 단일 cell이 최대 크기를 넘으면 preview만 보내고 별도 value fetch handle을 제공한다.
@@ -255,10 +256,10 @@ type QueryStreamEvent =
 
 ### 7.5 행 제한
 
-- `maxRows` 도달 시 더 이상 row를 받지 않고 query를 정상적으로 마무리한다.
-- `truncated: true`를 표시한다.
+- 일반 쿼리에는 고정 행 수 제한이 없다. 기존 프로필의 `maxRows`도 적용하지 않는다.
+- 메모리 예산(결과 512MiB / 연결 1GiB / 앱 2GiB)에 도달하면 추가 행의 보관을 중단하고 `truncated: true`와 메모리 한도 안내를 표시한다. 보존량 추정은 원본 byte 수 × 4 + 컬럼 수 × 256바이트이며, IPC chunk는 별도로 실제 직렬화 크기를 사용한다.
 - arbitrary query에는 SQL text를 자동 rewrite해 `LIMIT`을 삽입하지 않는다.
-- driver stream에서 maxRows까지만 수집하고 남은 결과 처리를 중단 또는 cancel한다.
+- 보관을 중단해도 서버의 최종 결과까지 소비한다. `RETURNING`의 결과 보관 중단이 쓰기의 취소나 최종 커밋 확인 생략으로 이어지지 않는다.
 - Table Data Tab은 server-side pagination을 사용한다.
 
 ## 8. 실행 취소
@@ -275,7 +276,7 @@ type QueryCancelRequest = {
 
 1. execution registry에서 session과 backend PID를 찾는다.
 2. Result Tab 상태를 `cancelling`으로 바꾼다.
-3. control connection으로 해당 backend의 현재 query 취소를 요청한다.
+3. metadata/편집 대기열과 독립적인 전용 연결로 해당 backend의 현재 query 취소를 요청한다.
 4. PostgreSQL session이 error 또는 ready 상태로 돌아올 때까지 기다린다.
 5. terminal `cancelled` 또는 실제 완료 상태를 전송한다.
 
@@ -391,7 +392,13 @@ type AppError = {
 - 새 결과 실행은 기존 결과를 변경하지 않는다.
 - channel 이벤트 순서와 terminal exactly-once 규칙을 지킨다.
 - cancellation은 다른 Query Tab을 종료하지 않는다.
-- 500행 결과가 chunk 단위로 UI에 표시된다.
+- 500행 결과가 처음 200행, 스크롤 후 200행, 마지막 100행 순서로 UI에 표시된다.
 - timeout 후 transaction 상태가 정확히 표시된다.
 - 오류와 History에 비밀값 또는 결과 row가 남지 않는다.
 
+
+## 현재 데스크톱 구현의 완료·제한 처리
+
+행 수·byte 예산에 도달하면 보존할 행만 줄인다. 임의 SQL을 LIMIT로 다시 쓰거나 stream을 중간에 버리지 않고 PostgreSQL 완료 응답까지 읽는다. 따라서 deferred constraint가 실패한 INSERT RETURNING도 실패로 보고한다.
+
+취소는 접수 응답과 terminal을 구분한다. 서버 응답을 확인하기 전에 취소 성공을 표시하지 않으며, 제한 시간 안에 확인할 수 없으면 세션을 폐기하고 QUERY_OUTCOME_UNKNOWN을 표시한다. ACK가 5초간 진행되지 않는 consumer도 취소 경로를 따른다. 실패한 트랜잭션의 ROLLBACK 및 ROLLBACK TO SAVEPOINT를 timeout 설정이 가로막지 않는다.

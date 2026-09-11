@@ -1,10 +1,11 @@
+use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-use futures_util::TryStreamExt;
+use futures_util::{FutureExt, TryStreamExt};
 use sqlx::postgres::PgConnectOptions;
-use sqlx::{AssertSqlSafe, Connection, Executor, PgConnection, SqlSafeStr, Statement};
+use sqlx::{AssertSqlSafe, Connection, Either, Executor, PgConnection, Row, SqlSafeStr, Statement};
 use tokio::sync::{mpsc, oneshot, Semaphore};
 use tokio_util::sync::CancellationToken;
 
@@ -13,7 +14,7 @@ use crate::domain::DbValue;
 use crate::error::AppError;
 
 use super::decoder;
-use super::large_values::LargeValueStore;
+use super::large_values::{LargeValueStore, MAX_FETCH_BYTES, RESULT_PAGE_ROWS};
 
 /// Delivers one stream event; returns false when the consumer is gone
 /// (disposed webview) so the execution stops instead of buffering forever.
@@ -101,6 +102,7 @@ pub struct SessionHandle {
     pub tx: mpsc::Sender<SessionMsg>,
     pub busy: Arc<AtomicBool>,
     pub backend_pid: Arc<AtomicI32>,
+    pub transaction: Arc<Mutex<TransactionState>>,
 }
 
 /// One actor per Query Tab: owns a lazy dedicated PgConnection, processes one
@@ -115,12 +117,14 @@ pub fn spawn_session(
     let (tx, mut rx) = mpsc::channel::<SessionMsg>(4);
     let busy = Arc::new(AtomicBool::new(false));
     let backend_pid = Arc::new(AtomicI32::new(0));
+    let transaction = Arc::new(Mutex::new(TransactionState::Idle));
     let handle = SessionHandle {
         session_id,
         query_tab_id,
         tx,
         busy: busy.clone(),
         backend_pid: backend_pid.clone(),
+        transaction: transaction.clone(),
     };
 
     tauri::async_runtime::spawn(async move {
@@ -133,21 +137,65 @@ pub fn spawn_session(
                     execution,
                     sink,
                 } => {
-                    run_execution(
-                        &mut conn,
-                        &opts,
-                        read_only,
-                        &backend_pid,
-                        &mut txn,
-                        &request,
-                        &execution,
-                        &sink,
-                    )
-                    .await;
+                    let started = Instant::now();
+                    let outcome = {
+                        let running = AssertUnwindSafe(run_execution(
+                            &mut conn,
+                            &opts,
+                            read_only,
+                            &backend_pid,
+                            &mut txn,
+                            &request,
+                            &execution,
+                            &sink,
+                        ))
+                        .catch_unwind();
+                        tokio::pin!(running);
+                        let first = tokio::select! {
+                            result = &mut running => Some(result),
+                            _ = execution.cancel.cancelled() => None,
+                            _ = tokio::time::sleep(Duration::from_millis(u64::from(request.timeout_ms) + 2_000)) => None,
+                        };
+                        match first {
+                            Some(result) => Some(result),
+                            None => {
+                                // A fresh connection keeps cancellation independent of metadata/edit locks.
+                                let cancelled = tokio::time::timeout(
+                                    Duration::from_secs(2),
+                                    cancel_backend(&opts, backend_pid.load(Ordering::Acquire)),
+                                )
+                                .await;
+                                match cancelled {
+                                    Ok(Ok(())) => {
+                                        tokio::time::timeout(Duration::from_secs(2), &mut running)
+                                            .await
+                                            .ok()
+                                    }
+                                    _ => None,
+                                }
+                            }
+                        }
+                    };
+                    let terminal = match outcome {
+                        Some(Ok(event)) => event,
+                        _ => {
+                            if let Some(c) = conn.take() {
+                                let _ = c.close_hard().await;
+                            }
+                            backend_pid.store(0, Ordering::Release);
+                            txn = TransactionState::Idle;
+                            QueryStreamEvent::Failed {
+                                execution_id: execution.id.clone(),
+                                error: AppError::new("QUERY_OUTCOME_UNKNOWN", "Session closed before the server outcome could be confirmed. Check the database before retrying writes."),
+                                duration_ms: started.elapsed().as_millis() as u64,
+                                transaction_state: txn,
+                            }
+                        }
+                    };
+                    *transaction.lock().unwrap() = txn;
                     execution.terminal.store(true, Ordering::Release);
-                    // wake any pending backpressure waiters so nothing leaks
-                    execution.cancel.cancel();
                     busy.store(false, Ordering::Release);
+                    sink(terminal);
                 }
                 SessionMsg::Close { rollback, reply } => {
                     if let Some(mut c) = conn.take() {
@@ -169,7 +217,7 @@ pub fn spawn_session(
 /// First keyword of the SQL, skipping leading whitespace and comments.
 /// Used for the command tag approximation and transaction-state tracking.
 /// ponytail: replace with server ReadyForQuery status if sqlx ever exposes it.
-pub fn first_keyword(sql: &str) -> String {
+fn skip_comments(sql: &str) -> &str {
     let mut rest = sql;
     loop {
         rest = rest.trim_start();
@@ -200,18 +248,61 @@ pub fn first_keyword(sql: &str) -> String {
             break;
         }
     }
-    rest.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+    rest
+}
+
+pub fn first_keyword(sql: &str) -> String {
+    skip_comments(sql)
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
         .next()
         .unwrap_or("")
         .to_ascii_uppercase()
 }
 
+fn command_words(sql: &str) -> Vec<String> {
+    let mut rest = sql;
+    let mut tokens = Vec::new();
+    for _ in 0..5 {
+        rest = skip_comments(rest);
+        let word = first_keyword(rest);
+        if word.is_empty() {
+            break;
+        }
+        rest = &rest[word.len()..];
+        tokens.push(word);
+    }
+    tokens
+}
+
 fn txn_after_success(txn: TransactionState, sql: &str) -> TransactionState {
+    let tokens = command_words(sql);
     match first_keyword(sql).as_str() {
         "BEGIN" | "START" => TransactionState::InTransaction,
-        "COMMIT" | "END" | "ROLLBACK" | "ABORT" => TransactionState::Idle,
+        "ROLLBACK" if tokens.iter().any(|s| s == "TO") => TransactionState::InTransaction,
+        "COMMIT" | "END" | "ROLLBACK" | "ABORT" => {
+            if tokens.windows(2).any(|w| w == ["AND", "CHAIN"]) {
+                TransactionState::InTransaction
+            } else {
+                TransactionState::Idle
+            }
+        }
+        "PREPARE" if tokens.get(1).map(String::as_str) == Some("TRANSACTION") => {
+            TransactionState::Idle
+        }
         _ => txn,
     }
+}
+
+async fn cancel_backend(opts: &PgConnectOptions, pid: i32) -> Result<(), sqlx::Error> {
+    if pid == 0 {
+        return Ok(());
+    }
+    let mut control = PgConnection::connect_with(opts).await?;
+    let _: bool = sqlx::query_scalar("SELECT pg_cancel_backend($1)")
+        .bind(pid)
+        .fetch_one(&mut control)
+        .await?;
+    control.close().await
 }
 
 fn txn_after_error(txn: TransactionState) -> TransactionState {
@@ -233,34 +324,40 @@ async fn run_execution(
     req: &QueryExecuteRequest,
     exec: &Arc<ExecutionState>,
     sink: &EventSink,
-) {
+) -> QueryStreamEvent {
     let start = Instant::now();
     let eid = exec.id.clone();
-    let duration = |s: &Instant| s.elapsed().as_millis() as u64;
-
+    let mut started_sent = false;
     macro_rules! fail {
         ($err:expr) => {{
+            if !started_sent {
+                sink(QueryStreamEvent::Started {
+                    execution_id: eid.clone(),
+                    backend_pid: backend_pid.load(Ordering::Acquire),
+                    started_at: chrono::Utc::now().to_rfc3339(),
+                });
+            }
             *txn = txn_after_error(*txn);
-            sink(QueryStreamEvent::Failed {
+            return QueryStreamEvent::Failed {
                 execution_id: eid.clone(),
                 error: $err,
-                duration_ms: duration(&start),
+                duration_ms: start.elapsed().as_millis() as u64,
                 transaction_state: *txn,
-            });
-            return;
+            };
         }};
     }
-
-    // 1. lazy dedicated connection
     if conn_slot.is_none() {
         let mut c = match PgConnection::connect_with(opts).await {
             Ok(c) => c,
             Err(e) => fail!(AppError::from_sqlx(&e)),
         };
-        let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        let pid = match sqlx::query_scalar::<_, i32>("SELECT pg_backend_pid()")
             .fetch_one(&mut c)
             .await
-            .unwrap_or(0);
+        {
+            Ok(pid) => pid,
+            Err(e) => fail!(AppError::from_sqlx(&e)),
+        };
         backend_pid.store(pid, Ordering::Release);
         if read_only {
             if let Err(e) = sqlx::raw_sql("SET default_transaction_read_only = on")
@@ -273,33 +370,41 @@ async fn run_execution(
         *conn_slot = Some(c);
     }
     let conn = conn_slot.as_mut().unwrap();
-
-    // 2. per-execution server-side timeout (validated integer, safe to inline)
-    if let Err(e) = sqlx::raw_sql(AssertSqlSafe(format!(
-        "SET statement_timeout = {}",
-        req.timeout_ms
-    )))
-    .execute(&mut *conn)
-    .await
-    {
-        fail!(AppError::from_sqlx(&e));
-    }
-
     sink(QueryStreamEvent::Started {
         execution_id: eid.clone(),
         backend_pid: backend_pid.load(Ordering::Acquire),
         started_at: chrono::Utc::now().to_rfc3339(),
     });
-
-    // 3. prepare: extended protocol rejects multi-statement SQL and
-    //    reports syntax error position. User-authored SQL is the product;
-    //    AssertSqlSafe is the deliberate audit point for it.
+    started_sent = true;
+    // SET cannot run inside an aborted transaction. Let recovery statements reach PostgreSQL.
+    if *txn != TransactionState::FailedTransaction {
+        if let Err(e) = sqlx::raw_sql(AssertSqlSafe(format!(
+            "SET statement_timeout = {}",
+            req.timeout_ms
+        )))
+        .execute(&mut *conn)
+        .await
+        {
+            fail!(AppError::from_sqlx(&e));
+        }
+    }
+    if exec.cancel.is_cancelled() {
+        return QueryStreamEvent::Cancelled {
+            execution_id: eid,
+            received_row_count: 0,
+            duration_ms: start.elapsed().as_millis() as u64,
+            transaction_state: *txn,
+        };
+    }
     let stmt = match (&mut *conn)
         .prepare(AssertSqlSafe(req.sql.clone()).into_sql_str())
         .await
     {
         Ok(s) => s,
-        Err(e) => fail!(AppError::from_sqlx(&e)),
+        Err(e) => {
+            let _ = conn.ping().await;
+            fail!(AppError::from_sqlx(&e));
+        }
     };
     let columns: Vec<ColumnMeta> = decoder::column_meta(stmt.columns());
     let has_result_set = !columns.is_empty();
@@ -309,45 +414,97 @@ async fn run_execution(
             columns,
         });
     }
+    if exec.cancel.is_cancelled() {
+        return QueryStreamEvent::Cancelled {
+            execution_id: eid,
+            received_row_count: 0,
+            duration_ms: start.elapsed().as_millis() as u64,
+            transaction_state: *txn,
+        };
+    }
 
-    // 4. stream rows with chunking, backpressure and cancellation
-    let mut buf: Vec<Vec<DbValue>> = Vec::new();
-    let mut seq: u64 = 0;
-    let mut total: u64 = 0;
+    let mut buf = Vec::new();
+    let mut seq = 0;
+    let mut total = 0;
+    let mut chunk_bytes = 0usize;
     let mut truncated = false;
-    let mut affected: Option<u64> = None;
-    let mut cancelled = exec.cancel.is_cancelled();
-    let mut sql_err: Option<sqlx::Error> = None;
-
-    if has_result_set {
-        let mut stream = stmt.query().fetch(&mut *conn);
-        while !cancelled {
-            let item = tokio::select! {
-                biased;
-                _ = exec.cancel.cancelled() => {
-                    cancelled = true;
-                    break;
-                }
-                item = stream.try_next() => item,
-            };
-            match item {
-                Ok(Some(row)) => {
-                    buf.push(decoder::decode_row(&row, &exec.large));
+    let mut affected = None;
+    let mut sql_err = None;
+    let mut receiving = true;
+    {
+        // Always drain through ReadyForQuery: rows and CommandComplete do not prove commit succeeded.
+        let mut stream = (&mut *conn).fetch_many(stmt.query());
+        loop {
+            match stream.try_next().await {
+                Ok(Some(Either::Right(row))) => {
+                    if !receiving || (!exec.large.paged && total >= u64::from(req.max_rows)) {
+                        truncated = true;
+                        continue;
+                    }
+                    let raw_bytes: usize = (0..row.len())
+                        .map(|i| {
+                            row.try_get_raw(i)
+                                .ok()
+                                .and_then(|v| v.as_bytes().ok().map(|b| b.len()))
+                                .unwrap_or(0)
+                        })
+                        .sum();
+                    if !exec.large.reserve_row(raw_bytes, row.len()) {
+                        receiving = false;
+                        truncated = true;
+                        continue;
+                    }
+                    let decoded = decoder::decode_row(&row, &exec.large);
+                    let payload_bytes = serde_json::to_vec(&decoded)
+                        .map(|b| b.len())
+                        .unwrap_or(usize::MAX);
+                    if payload_bytes > MAX_FETCH_BYTES {
+                        // Keep a complete prefix. Never cut or replace a value to make it fit IPC.
+                        receiving = false;
+                        truncated = true;
+                        continue;
+                    }
+                    // IPC size is independent of the retained-memory estimate, including JSON escaping.
+                    if !buf.is_empty()
+                        && chunk_bytes.saturating_add(payload_bytes) > MAX_FETCH_BYTES
+                    {
+                        if !flush_chunk(&mut buf, &mut seq, exec, sink).await {
+                            receiving = false;
+                            truncated = true;
+                        }
+                        chunk_bytes = 0;
+                    }
+                    if !receiving {
+                        continue;
+                    }
+                    if exec.large.paged {
+                        if total >= RESULT_PAGE_ROWS as u64 {
+                            exec.large.retain_row(decoded);
+                            total += 1;
+                            continue;
+                        }
+                        exec.large.retain_row(decoded.clone());
+                    }
+                    chunk_bytes += payload_bytes;
+                    buf.push(decoded);
                     total += 1;
-                    let limit = if seq == 0 {
+                    let limit = if exec.large.paged {
+                        RESULT_PAGE_ROWS
+                    } else if seq == 0 {
                         FIRST_CHUNK_ROWS
                     } else {
                         CHUNK_ROWS
                     };
-                    if buf.len() >= limit && !flush_chunk(&mut buf, &mut seq, exec, sink).await {
-                        cancelled = true;
-                        break;
-                    }
-                    if total >= req.max_rows as u64 {
-                        truncated = true;
-                        break;
+                    if buf.len() >= limit || (exec.large.paged && total == RESULT_PAGE_ROWS as u64)
+                    {
+                        if !flush_chunk(&mut buf, &mut seq, exec, sink).await {
+                            receiving = false;
+                            truncated = true;
+                        }
+                        chunk_bytes = 0;
                     }
                 }
+                Ok(Some(Either::Left(done))) => affected = Some(done.rows_affected()),
                 Ok(None) => break,
                 Err(e) => {
                     sql_err = Some(e);
@@ -355,72 +512,79 @@ async fn run_execution(
                 }
             }
         }
-        drop(stream);
-    } else if !cancelled {
-        let done = tokio::select! {
-            biased;
-            _ = exec.cancel.cancelled() => {
-                cancelled = true;
-                None
-            }
-            r = stmt.query().execute(&mut *conn) => Some(r),
+    }
+    // Consume the pending ReadyForQuery after errors, without issuing SQL in an aborted transaction.
+    if sql_err.is_some() && conn.ping().await.is_err() {
+        if let Some(c) = conn_slot.take() {
+            let _ = c.close_hard().await;
+        }
+        backend_pid.store(0, Ordering::Release);
+        *txn = TransactionState::Idle;
+    }
+    if sql_err.is_none() && !buf.is_empty() && !flush_chunk(&mut buf, &mut seq, exec, sink).await {
+        truncated = true;
+    }
+    total = total.saturating_sub(buf.len() as u64);
+    let duration_ms = start.elapsed().as_millis() as u64;
+    if let Some(e) = sql_err {
+        let mut error = match &e {
+            sqlx::Error::Database(_) => AppError::from_sqlx(&e),
+            _ => AppError::new("QUERY_OUTCOME_UNKNOWN", "Connection lost before the server outcome could be confirmed. Check the database before retrying writes."),
         };
-        match done {
-            Some(Ok(res)) => affected = Some(res.rows_affected()),
-            Some(Err(e)) => sql_err = Some(e),
-            None => {}
+        let words = command_words(&req.sql);
+        // COMMIT errors abort and finish the transaction, even with AND CHAIN.
+        // COMMIT PREPARED operates on a different transaction and is excluded.
+        *txn = if matches!(words.first().map(String::as_str), Some("COMMIT" | "END"))
+            && words.get(1).map(String::as_str) != Some("PREPARED")
+        {
+            TransactionState::Idle
+        } else {
+            txn_after_error(*txn)
+        };
+        if error.sql_state.as_deref() == Some("57014") {
+            if exec.cancel.is_cancelled() {
+                return QueryStreamEvent::Cancelled {
+                    execution_id: eid,
+                    received_row_count: total,
+                    duration_ms,
+                    transaction_state: *txn,
+                };
+            }
+            error.code = "QUERY_TIMEOUT".into();
         }
-    }
-
-    if !cancelled && sql_err.is_none() && !buf.is_empty() {
-        cancelled = !flush_chunk(&mut buf, &mut seq, exec, sink).await;
-    }
-
-    // 5. exactly one terminal event, emitted only here
-    let duration_ms = duration(&start);
-    let user_cancelled = exec.cancel.is_cancelled();
-    let err_is_cancel = sql_err
-        .as_ref()
-        .map(|e| AppError::from_sqlx(e).sql_state.as_deref() == Some("57014"))
-        .unwrap_or(false);
-
-    if cancelled || (err_is_cancel && user_cancelled) {
-        *txn = txn_after_error(*txn);
-        sink(QueryStreamEvent::Cancelled {
+        QueryStreamEvent::Failed {
             execution_id: eid,
-            received_row_count: total,
+            error,
             duration_ms,
             transaction_state: *txn,
-        });
-    } else if let Some(e) = sql_err {
-        let mut err = AppError::from_sqlx(&e);
-        if err_is_cancel {
-            // statement_timeout fired without a user cancel
-            err.code = "QUERY_TIMEOUT".into();
         }
-        *txn = txn_after_error(*txn);
-        sink(QueryStreamEvent::Failed {
-            execution_id: eid,
-            error: err,
-            duration_ms,
-            transaction_state: *txn,
-        });
     } else {
-        if !has_result_set {
+        if !has_result_set
+            || !matches!(
+                first_keyword(&req.sql).as_str(),
+                "SELECT" | "SHOW" | "EXPLAIN" | "VALUES" | "TABLE"
+            )
+        {
             sink(QueryStreamEvent::Command {
                 execution_id: eid.clone(),
-                command_tag: first_keyword(&req.sql),
+                command_tag: if *txn == TransactionState::FailedTransaction
+                    && matches!(first_keyword(&req.sql).as_str(), "COMMIT" | "END")
+                {
+                    "ROLLBACK".into()
+                } else {
+                    first_keyword(&req.sql)
+                },
                 affected_rows: affected,
             });
         }
         *txn = txn_after_success(*txn, &req.sql);
-        sink(QueryStreamEvent::Completed {
+        QueryStreamEvent::Completed {
             execution_id: eid,
             row_count: total,
             truncated,
             duration_ms,
             transaction_state: *txn,
-        });
+        }
     }
 }
 
@@ -435,6 +599,7 @@ async fn flush_chunk(
     let permit = tokio::select! {
         biased;
         _ = exec.cancel.cancelled() => return false,
+        _ = tokio::time::sleep(Duration::from_secs(5)) => { exec.cancel.cancel(); return false; },
         p = exec.ack_sem.clone().acquire_owned() => match p {
             Ok(p) => p,
             Err(_) => return false,
@@ -448,6 +613,9 @@ async fn flush_chunk(
         rows: std::mem::take(buf),
     });
     *seq += 1;
+    if !delivered {
+        exec.cancel.cancel();
+    }
     delivered
 }
 
@@ -472,6 +640,19 @@ mod tests {
         assert_eq!(txn_after_success(FailedTransaction, "rollback"), Idle);
         assert_eq!(txn_after_error(InTransaction), FailedTransaction);
         assert_eq!(txn_after_error(Idle), Idle);
+        assert_eq!(
+            txn_after_success(FailedTransaction, "ROLLBACK TO SAVEPOINT x"),
+            InTransaction
+        );
+        assert_eq!(
+            txn_after_success(InTransaction, "COMMIT /* AND CHAIN */"),
+            Idle
+        );
+        assert_eq!(
+            txn_after_success(InTransaction, "COMMIT AND /* note */ CHAIN"),
+            InTransaction
+        );
+        assert_eq!(txn_after_success(InTransaction, "ROLLBACK -- TO x\n"), Idle);
     }
 
     #[test]

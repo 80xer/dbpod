@@ -59,10 +59,14 @@ fn export_ipc_types() {
     decl!(ResultValueFetchRequest);
     decl!(ResultValueFetchResponse);
     decl!(ResultReleaseRequest);
+    decl!(ResultRowsFetchRequest);
+    decl!(ResultRowsFetchResponse);
     decl!(MetadataListSchemasRequest);
+    decl!(DatabaseInfo);
     decl!(SchemaInfo);
     decl!(ObjectKind);
     decl!(MetadataListObjectsRequest);
+    decl!(MetadataDropObjectRequest);
     decl!(DatabaseObjectSummary);
     decl!(MetadataGetTableRequest);
     decl!(TableColumnMetadata);

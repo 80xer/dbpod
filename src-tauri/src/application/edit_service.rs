@@ -1,9 +1,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use base64::Engine;
 use sqlx::postgres::PgRow;
-use sqlx::{Column, Row, SqlSafeStr};
+use sqlx::{Column, Connection, Row, SqlSafeStr};
 use uuid::Uuid;
 
 use crate::application::metadata_service::{self, quote_ident};
@@ -38,6 +39,10 @@ pub struct RowPlan {
 
 pub struct ChangeSet {
     pub connection_id: String,
+    pub database: String,
+    pub result_tab_id: String,
+    pub metadata: TableMetadata,
+    pub expires: Instant,
     pub target: ChangeTarget,
     pub plans: Vec<RowPlan>,
 }
@@ -164,6 +169,11 @@ impl<'a> Planner<'a> {
         warnings: &mut Vec<String>,
     ) -> Result<String, AppError> {
         let mut conds = self.pk_conditions(identity, params, next)?;
+        if identity.xmin.is_none() && original_values.is_none_or(HashMap::is_empty) {
+            return Err(AppError::invalid_request(
+                "row version or displayed original values required",
+            ));
+        }
         if let Some(xmin) = &identity.xmin {
             params.push(BindParam::Text(Some(xmin.clone())));
             conds.push(format!("xmin::text = ${}", *next));
@@ -255,12 +265,18 @@ impl<'a> Planner<'a> {
         })
     }
 
-    fn plan_delete(&self, row_id: &str, identity: &RowIdentity) -> Result<RowPlan, AppError> {
+    fn plan_delete(
+        &self,
+        row_id: &str,
+        identity: &RowIdentity,
+        originals: &HashMap<String, DbValue>,
+        warnings: &mut Vec<String>,
+    ) -> Result<RowPlan, AppError> {
         self.validate_identity(identity)?;
         let mut params: Vec<BindParam> = Vec::new();
         let mut next = 1usize;
-        let mut warnings = Vec::new();
-        let where_sql = self.where_clause(identity, None, &mut params, &mut next, &mut warnings)?;
+        let where_sql =
+            self.where_clause(identity, Some(originals), &mut params, &mut next, warnings)?;
         let sql = format!("DELETE FROM {} WHERE {}", self.table(), where_sql);
         Ok(RowPlan {
             row_id: row_id.into(),
@@ -370,6 +386,16 @@ pub async fn preview(
         }
     }
 
+    let database = {
+        let workspaces = state.workspaces.lock().unwrap();
+        let ws = workspaces
+            .get(&req.connection_id)
+            .ok_or_else(|| AppError::invalid_request("unknown connection"))?;
+        if ws.profile.read_only {
+            return Err(AppError::new("PERMISSION_DENIED", "read-only connection"));
+        }
+        ws.profile.database.clone()
+    };
     let meta = metadata_service::get_table(
         state,
         &MetadataGetTableRequest {
@@ -384,16 +410,37 @@ pub async fn preview(
     if meta.primary_key.is_empty() {
         return Err(AppError::invalid_request("table has no primary key"));
     }
-    {
-        let workspaces = state.workspaces.lock().unwrap();
-        let ws = workspaces
-            .get(&req.connection_id)
-            .ok_or_else(|| AppError::invalid_request("unknown connection"))?;
-        if ws.profile.read_only {
-            return Err(AppError::new("PERMISSION_DENIED", "read-only connection"));
-        }
-    }
 
+    if meta.columns.iter().any(|c| c.name == "__dbpod_xmin") {
+        return Err(AppError::invalid_request(
+            "reserved row-version column name collision",
+        ));
+    }
+    let result_store = state
+        .large_values
+        .lock()
+        .unwrap()
+        .get(&req.result_tab_id)
+        .cloned()
+        .ok_or_else(|| {
+            AppError::invalid_request("result was released; query again before editing")
+        })?;
+    if result_store.connection_id != req.connection_id {
+        return Err(AppError::invalid_request(
+            "result belongs to another connection",
+        ));
+    }
+    if state
+        .executions
+        .lock()
+        .unwrap()
+        .values()
+        .any(|e| !e.is_terminal() && Arc::ptr_eq(&e.large, &result_store))
+    {
+        return Err(AppError::invalid_request(
+            "wait for query completion before editing",
+        ));
+    }
     let planner = Planner { meta: &meta };
     let mut warnings = Vec::new();
     let mut plans = Vec::new();
@@ -404,9 +451,14 @@ pub async fn preview(
     };
     // Save order: DELETE -> UPDATE -> INSERT (FK/unique friendliness).
     for change in &req.changes {
-        if let RowChange::Delete { row_id, identity } = change {
+        if let RowChange::Delete {
+            row_id,
+            identity,
+            original_values,
+        } = change
+        {
             counts.delete += 1;
-            plans.push(planner.plan_delete(row_id, identity)?);
+            plans.push(planner.plan_delete(row_id, identity, original_values, &mut warnings)?);
         }
     }
     for change in &req.changes {
@@ -461,10 +513,40 @@ pub async fn preview(
         schema: meta.schema.clone(),
         table: meta.name.clone(),
     };
-    state.change_sets.lock().unwrap().insert(
+    let mut sets = state.change_sets.lock().unwrap();
+    sets.retain(|_, set| set.expires > Instant::now());
+    let bytes = |plans: &[RowPlan]| {
+        plans
+            .iter()
+            .map(|p| {
+                p.sql.len()
+                    + p.params
+                        .iter()
+                        .map(|v| match v {
+                            BindParam::Text(v) => v.as_ref().map_or(0, String::len),
+                            BindParam::Bytea(v) => v.len(),
+                        })
+                        .sum::<usize>()
+            })
+            .sum::<usize>()
+    };
+    let new_bytes = bytes(&plans);
+    if sets.len() >= 32
+        || new_bytes > 5 * 1024 * 1024
+        || sets.values().map(|s| bytes(&s.plans)).sum::<usize>() + new_bytes > 50 * 1024 * 1024
+    {
+        return Err(AppError::invalid_request(
+            "pending change previews exceed the memory limit",
+        ));
+    }
+    sets.insert(
         change_set_id.clone(),
         ChangeSet {
             connection_id: req.connection_id.clone(),
+            database,
+            result_tab_id: req.result_tab_id.clone(),
+            metadata: meta,
+            expires: Instant::now() + Duration::from_secs(600),
             target: target.clone(),
             plans,
         },
@@ -492,9 +574,26 @@ fn bind_all<'q>(
     q
 }
 
-fn row_to_updated(row: &PgRow, row_id: &str, operation: &str) -> UpdatedRow {
-    let store = LargeValueStore::default();
-    let decoded = decoder::decode_row(row, &store);
+fn row_to_updated(
+    row: &PgRow,
+    row_id: &str,
+    operation: &str,
+    store: &LargeValueStore,
+) -> Result<UpdatedRow, AppError> {
+    let raw_bytes: usize = (0..row.len())
+        .map(|i| {
+            row.try_get_raw(i)
+                .ok()
+                .and_then(|v| v.as_bytes().ok().map(|b| b.len()))
+                .unwrap_or(0)
+        })
+        .sum();
+    if !store.reserve_row(raw_bytes, row.len()) {
+        return Err(AppError::invalid_request(
+            "updated rows exceed the result memory budget; release other results and retry",
+        ));
+    }
+    let decoded = decoder::decode_row(row, store);
     let mut values = HashMap::new();
     let mut xmin = None;
     for (i, col) in row.columns().iter().enumerate() {
@@ -506,12 +605,12 @@ fn row_to_updated(row: &PgRow, row_id: &str, operation: &str) -> UpdatedRow {
         }
         values.insert(col.name().to_string(), decoded[i].clone());
     }
-    UpdatedRow {
+    Ok(UpdatedRow {
         row_id: row_id.into(),
         operation: operation.into(),
         values,
         xmin,
-    }
+    })
 }
 
 pub fn discard(state: &AppState, req: &ChangesDiscardRequest) -> Result<(), AppError> {
@@ -533,16 +632,55 @@ pub async fn commit(
         .remove(&req.change_set_id)
         .ok_or_else(|| AppError::invalid_request("unknown or already committed change set"))?;
 
+    if set.expires <= Instant::now() {
+        return Err(AppError::invalid_request(
+            "change preview expired; preview again",
+        ));
+    }
+    let store = state
+        .large_values
+        .lock()
+        .unwrap()
+        .get(&set.result_tab_id)
+        .cloned()
+        .ok_or_else(|| AppError::invalid_request("result was released; preview again"))?;
+    if store.connection_id != set.connection_id {
+        return Err(AppError::invalid_request("result connection mismatch"));
+    }
     let total = set.plans.len() as u32;
     sink(ChangesCommitEvent::Started { total_rows: total });
 
+    let progress_sink = sink.clone();
     let result = metadata_service::with_control(state, &set.connection_id, move |conn| {
         Box::pin(async move {
+            let database: String = sqlx::query_scalar("SELECT current_database()")
+                .fetch_one(&mut *conn).await.map_err(|e| AppError::from_sqlx(&e))?;
+            if database != set.database {
+                return Err(AppError::new("DATABASE_CHANGED", "database changed; query and preview again"));
+            }
             let mut updated: Vec<UpdatedRow> = Vec::new();
-            sqlx::raw_sql("BEGIN")
-                .execute(&mut *conn)
-                .await
-                .map_err(|e| AppError::from_sqlx(&e))?;
+            let mut transaction = conn.begin().await.map_err(|e| AppError::from_sqlx(&e))?;
+            let conn = &mut *transaction;
+            sqlx::raw_sql("SET LOCAL statement_timeout = '30s'; SET LOCAL lock_timeout = '3s'")
+                .execute(&mut *conn).await.map_err(|e| AppError::from_sqlx(&e))?;
+
+            // Hold the relation against concurrent rename/drop/column DDL until COMMIT.
+            // Re-resolve the name only after locking it: the name may now refer to a replacement.
+            let table = format!("{}.{}", quote_ident(&set.target.schema), quote_ident(&set.target.table));
+            sqlx::raw_sql(sqlx::AssertSqlSafe(format!("LOCK TABLE {table} IN ROW EXCLUSIVE MODE")))
+                .execute(&mut *conn).await.map_err(|e| AppError::from_sqlx(&e))?;
+            let oid: i64 = sqlx::query_scalar("SELECT to_regclass($1)::oid::int8").bind(&table)
+                .fetch_one(&mut *conn).await.map_err(|e| AppError::from_sqlx(&e))?;
+            if oid != i64::from(set.metadata.relation_oid) {
+                return Err(AppError::new("SCHEMA_CHANGED", "Preview target was replaced; query and preview again"));
+            }
+            let columns: serde_json::Value = sqlx::query_scalar(
+                "SELECT json_agg(json_build_array(a.attnum, a.attname, a.atttypid::int8, format_type(a.atttypid, a.atttypmod), NOT a.attnotnull, pg_get_expr(d.adbin, d.adrelid), (a.attidentity <> '' OR a.attgenerated <> '')) ORDER BY a.attnum) FROM pg_attribute a LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum WHERE a.attrelid::int8 = $1 AND a.attnum > 0 AND NOT a.attisdropped"
+            ).bind(oid).fetch_one(&mut *conn).await.map_err(|e| AppError::from_sqlx(&e))?;
+            let expected = serde_json::Value::Array(set.metadata.columns.iter().map(|c| serde_json::json!([c.attribute_number, c.name, c.pg_type_oid, c.pg_type_name, c.nullable, c.default_expr, c.is_generated])).collect());
+            if columns != expected {
+                return Err(AppError::new("SCHEMA_CHANGED", "Preview columns changed; query and preview again"));
+            }
 
             let mut outcome: Result<Vec<UpdatedRow>, ChangesCommitEvent> = Ok(Vec::new());
             'rows: for (i, plan) in set.plans.iter().enumerate() {
@@ -567,7 +705,7 @@ pub async fn commit(
                 match exec {
                     Ok((1, maybe_row)) => {
                         if let Some(row) = maybe_row {
-                            updated.push(row_to_updated(&row, &plan.row_id, &plan.operation));
+                            updated.push(row_to_updated(&row, &plan.row_id, &plan.operation, &store)?);
                         } else {
                             updated.push(UpdatedRow {
                                 row_id: plan.row_id.clone(),
@@ -586,18 +724,17 @@ pub async fn commit(
                             )
                             .fetch_optional(&mut *conn)
                             .await
-                            .ok()
-                            .flatten()
+                            .map_err(|e| AppError::from_sqlx(&e))?
                             .map(|row| {
-                                let u = row_to_updated(&row, &plan.row_id, "current");
+                                let u = row_to_updated(&row, &plan.row_id, "current", &store)?;
                                 let mut values = u.values;
                                 // carry the fresh row version so the client can retry
                                 if let Some(x) = u.xmin {
                                     values
                                         .insert("__dbpod_xmin".into(), DbValue::Text { value: x });
                                 }
-                                values
-                            })
+                                Ok::<_, AppError>(values)
+                            }).transpose()?
                         } else {
                             None
                         };
@@ -626,20 +763,20 @@ pub async fn commit(
                     }
                 }
                 if (i + 1) % 50 == 0 {
-                    let _ = &updated;
+                    progress_sink(ChangesCommitEvent::Progress { completed_rows: (i + 1) as u32 });
                 }
             }
 
             match outcome {
                 Ok(_) => {
-                    sqlx::raw_sql("COMMIT")
-                        .execute(&mut *conn)
-                        .await
-                        .map_err(|e| AppError::from_sqlx(&e))?;
+                    transaction.commit().await.map_err(|e| match e {
+                        sqlx::Error::Database(_) => AppError::from_sqlx(&e),
+                        _ => AppError::new("COMMIT_OUTCOME_UNKNOWN", "Commit acknowledgement was lost. Check the database before retrying; changes may have been saved."),
+                    })?;
                     Ok(Ok(updated))
                 }
                 Err(event) => {
-                    let _ = sqlx::raw_sql("ROLLBACK").execute(&mut *conn).await;
+                    transaction.rollback().await.map_err(|e| AppError::from_sqlx(&e))?;
                     Ok(Err(event))
                 }
             }

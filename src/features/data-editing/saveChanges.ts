@@ -63,7 +63,7 @@ export function buildRowChanges(
   };
 
   for (const rowIndex of edits.deletes) {
-    changes.push({ operation: "delete", rowId: `d:${rowIndex}`, identity: identityFor(rowIndex) });
+    changes.push({ operation: "delete", rowId: `d:${rowIndex}`, identity: identityFor(rowIndex), originalValues: originalsFor(rowIndex) });
   }
   for (const [rowIndex, cells] of edits.updates) {
     if (edits.deletes.has(rowIndex)) continue; // delete wins
@@ -107,15 +107,21 @@ export async function commitChangeSet(
   changeSetId: string,
   info: EditableInfo,
 ): Promise<CommitOutcome> {
+  const originalRows = resultStore.getSnapshot(resultTabId).rows;
+  editStore.setLocked(resultTabId, true);
+  try {
   const outcome = await new Promise<CommitOutcome>((resolve, reject) => {
+    let terminal = false;
     const channel = new Channel<ChangesCommitEvent>();
     channel.onmessage = (event) => {
+      if (terminal) return;
+      if (event.type !== "started" && event.type !== "progress") terminal = true;
       switch (event.type) {
         case "started":
         case "progress":
           break;
         case "completed":
-          applyUpdatedRows(resultTabId, event.rows, info);
+          if (resultStore.getSnapshot(resultTabId).rows === originalRows) applyUpdatedRows(resultTabId, event.rows, info);
           resolve({ type: "completed", rowCount: event.rows.length });
           break;
         case "conflict":
@@ -129,10 +135,13 @@ export async function commitChangeSet(
           break;
       }
     };
-    ipc.changesCommit({ changeSetId }, channel).catch(reject);
+    void ipc.changesCommit({ changeSetId }, channel).then(() => {
+      if (!terminal) reject(new Error("저장 결과를 확인하지 못했습니다. 재시도 전에 DB 상태를 확인하세요."));
+    }).catch(reject);
   });
   if (outcome.type === "completed") editStore.clear(resultTabId);
   return outcome;
+  } finally { editStore.setLocked(resultTabId, false); }
 }
 
 function serverRowToGridRow(
@@ -180,29 +189,19 @@ export function applyServerValues(
   info: EditableInfo,
 ): void {
   const snapshot = resultStore.getSnapshot(resultTabId);
+  const resolved: number[] = [];
+  const removed: number[] = [];
   for (const c of conflicts) {
     const idx = c.rowId.startsWith("u:") || c.rowId.startsWith("d:") ? Number(c.rowId.slice(2)) : NaN;
-    if (Number.isNaN(idx)) continue;
+    if (!Number.isSafeInteger(idx) || idx < 0 || idx >= snapshot.rows.length) continue;
+    resolved.push(idx);
     if (c.current) {
-      resultStore.replaceRow(
-        resultTabId,
-        idx,
-        serverRowToGridRow(
-          snapshot.columns,
-          info,
-          { rowId: c.rowId, operation: "current", values: c.current, xmin: null },
-          snapshot.rows[idx],
-        ),
-      );
-      // xmin in `current` comes back under __dbpod_xmin via values map when present
-    } else {
-      resultStore.removeRows(resultTabId, [idx]);
-    }
-    if (c.rowId.startsWith("u:")) {
-      // drop the conflicting draft; other drafts stay
-      const edits = editStore.getSnapshot(resultTabId);
-      const cells = edits.updates.get(idx);
-      if (cells) for (const col of cells.keys()) editStore.setCell(resultTabId, idx, col, undefined);
-    }
+      resultStore.replaceRow(resultTabId, idx, serverRowToGridRow(snapshot.columns, info, {
+        rowId: c.rowId, operation: "current", values: c.current, xmin: textOf(c.current.__dbpod_xmin),
+      }, snapshot.rows[idx]));
+    } else removed.push(idx);
   }
+  // Resolve in the original coordinate system, then compact both stores once.
+  editStore.resolveRows(resultTabId, resolved, removed);
+  resultStore.removeRows(resultTabId, removed);
 }

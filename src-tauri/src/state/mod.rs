@@ -14,11 +14,15 @@ pub struct Workspace {
     pub profile: ConnectionProfile,
     /// Includes the password; lives only in Rust memory.
     pub connect_opts: PgConnectOptions,
-    /// Lazy control connection used for pg_cancel_backend and health checks.
-    /// ponytail: single connection, grow to a pool when metadata browsing lands.
+    /// Serializes metadata and atomic edit transactions; cancellation uses a separate connection.
     pub control: Arc<tokio::sync::Mutex<Option<PgConnection>>>,
     /// queryTabId -> session actor handle
     pub sessions: HashMap<String, SessionHandle>,
+}
+
+pub struct AiChatJob {
+    pub pid: i32,
+    pub canceled: bool,
 }
 
 pub struct AppState {
@@ -29,8 +33,11 @@ pub struct AppState {
     /// executionId -> live execution (removed when terminal).
     /// Arc so event sinks can deregister without holding AppState.
     pub executions: Arc<Mutex<HashMap<String, Arc<ExecutionState>>>>,
+    /// requestId -> running AI chat process handle.
+    pub ai_chat_jobs: Mutex<HashMap<String, AiChatJob>>,
     /// resultTabId -> large-value store (dropped on result_release).
     pub large_values: Mutex<HashMap<String, Arc<LargeValueStore>>>,
+    pub retained_usage: crate::infrastructure::postgres::large_values::RetainedUsage,
     /// changeSetId -> validated immutable change plan awaiting commit.
     pub change_sets: Mutex<HashMap<String, crate::application::edit_service::ChangeSet>>,
 }
@@ -43,7 +50,9 @@ impl AppState {
             workspaces: Mutex::new(HashMap::new()),
             executions: Arc::new(Mutex::new(HashMap::new())),
             large_values: Mutex::new(HashMap::new()),
+            retained_usage: Default::default(),
             change_sets: Mutex::new(HashMap::new()),
+            ai_chat_jobs: Mutex::new(HashMap::new()),
         }
     }
 }

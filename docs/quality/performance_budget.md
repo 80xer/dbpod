@@ -50,16 +50,19 @@ animation은 60fps 목표이며 reduced motion에서는 불필요한 transition�
 
 ## 5. Query result
 
-- 기본 maxRows: 500
-- 첫 chunk: 최대 50행
-- 후속 chunk: 기본 100행
+- 고정된 쿼리 행 수 제한 없음 (기존 maxRows 미적용)
+- 쿼리 결과: 최초 200행, 스크롤 시 최대 200행씩 추가 조회
+- Table Data stream: 첫 chunk 최대 50행, 후속 chunk 기본 100행
 - chunk soft byte limit: 1MiB
-- UI max loaded rows: 10,000
-- single Result Tab memory soft limit: 100MB
-- connection workspace result memory soft limit: 400MB desktop, 150MB mobile
-- app result memory hard guard: 800MB desktop, 250MB mobile
+- UI는 결과의 메모리 예산 범위에서 200행씩 추가로 가져온다.
+- 24GB 메모리 데스크톱에 맞춘 고정 보존량 예산: Result Tab 512MiB / 연결 1GiB / 앱 2GiB (하드웨어 자동 감지는 하지 않음)
+- 원본 byte 수 × 4 + 컬럼 수 × 256바이트로 보존량을 추정하며, 조회와 편집 결과에 같은 계산을 적용한다. Rust binary handle과 renderer 보존 데이터는 같은 결과 수명에 묶는다.
+- IPC chunk 크기는 메모리 추정치와 별개로 실제 JSON 직렬화 크기로 계산한다.
+- serialized 인라인 행이 1MiB를 넘으면 값을 잘라 표시하지 않고 해당 행 이전까지의 결과를 보존한다.
+- 이 값은 실제 프로세스 RSS의 절대 상한이 아니다. SQLx가 받는 단일 행과 export의 일시 할당은 별도 측정해야 한다.
+- 모바일 수치는 플랫폼 검증 시 별도로 확정한다.
 
-hard guard에 도달하면 새 row 수신을 중단하고 받은 결과를 유지한다.
+예산에 도달하면 새 row의 디코딩·보존·UI 전달을 중단하고 받은 결과를 유지한다. SQL 실행은 서버 완료까지 drain하여 쓰기의 커밋 결과를 확인한다. pin/dirty 결과를 자동 폐기하지 않는다.
 
 ## 6. First result latency
 
@@ -169,4 +172,3 @@ profiling build도 SQL, row와 secret을 trace에 포함하지 않는다.
 - Result Tab close 후 retained row 없음
 - 10,000 cells paste가 UI를 1초 이상 block하지 않음
 - hard memory guard가 app crash 대신 수신 중단으로 동작
-

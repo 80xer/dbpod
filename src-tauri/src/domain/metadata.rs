@@ -1,6 +1,13 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+#[derive(Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct DatabaseInfo {
+    pub name: String,
+    pub can_connect: bool,
+}
+
 #[derive(Debug, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct MetadataListSchemasRequest {
@@ -24,6 +31,14 @@ pub struct MetadataListObjectsRequest {
     pub kinds: Vec<ObjectKind>,
 }
 
+#[derive(Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct MetadataDropObjectRequest {
+    pub connection_id: String,
+    pub object_oid: u32,
+    pub kind: ObjectKind,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "kebab-case")]
 pub enum ObjectKind {
@@ -41,6 +56,11 @@ pub struct DatabaseObjectSummary {
     pub schema: String,
     pub name: String,
     pub kind: ObjectKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub function_arguments: Option<String>,
+    // Direct partition parent; descendants may belong to another schema.
+    pub partition_parent_oid: Option<u32>,
     pub can_select: Option<bool>,
     pub can_insert: Option<bool>,
     pub can_update: Option<bool>,
@@ -63,6 +83,7 @@ pub struct TableColumnMetadata {
     pub pg_type_name: String,
     pub nullable: bool,
     pub default_expr: Option<String>,
+    pub comment: Option<String>,
     pub is_generated: bool,
     pub is_primary_key: bool,
 }
