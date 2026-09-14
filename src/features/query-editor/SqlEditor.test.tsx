@@ -10,10 +10,13 @@ vi.mock("../../shared/ipc/invoke", () => ({ ipc: {
   metadataListObjects: vi.fn(async () => [
     { oid: 10, schema: "cms", name: "fnn_fy_his", kind: "table" },
     { oid: 20, schema: "ext", name: "rpt_rcv_evnt", kind: "table" },
+    // A table whose name collides with a schema, the case a bare "ext." hits.
+    { oid: 30, schema: "cms", name: "ext", kind: "table" },
   ]),
   metadataGetTable: vi.fn(async ({ relationOid }: { relationOid: number }) => ({
-    columns: (relationOid === 10 ? ["clsg_ym", "comp_cd", "stk_cd"] : ["created_at", "rpt_std_dt"])
-      .map((name) => ({ name })),
+    columns: (relationOid === 10 ? ["clsg_ym", "comp_cd", "stk_cd"]
+      : relationOid === 30 ? ["ext_col"]
+      : ["created_at", "rpt_std_dt"]).map((name) => ({ name })),
   })),
 } }));
 
@@ -45,7 +48,7 @@ it.each([
 it.each([
   ["SELECT | FROM cms.fnn_fy_his JOIN ext.rpt_rcv_evnt ON true;", "c", ["clsg_ym", "comp_cd", "created_at"]],
   ["SELECT * FROM cms.fnn_fy_his WHERE |;", "C", ["clsg_ym", "comp_cd"]],
-  ["SELECT * FROM cms|", ".", ["fnn_fy_his"]],
+  ["SELECT * FROM cms|", ".", ["ext", "fnn_fy_his"]],
   ["SELECT cms.fnn_fy_his| FROM cms.fnn_fy_his;", ".", ["clsg_ym", "comp_cd", "stk_cd"]],
   // An alias resolves to its own table, from either side of the statement.
   ["SELECT f| FROM cms.fnn_fy_his f;", ".", ["clsg_ym", "comp_cd", "stk_cd"]],
@@ -57,6 +60,12 @@ it.each([
   ["SELECT * FROM cms.fnn_fy_his WHERE ext|;", ".", ["rpt_rcv_evnt"]],
   // WHERE is a keyword, never the alias of the table before it.
   ["SELECT * FROM cms.fnn_fy_his WHERE where|;", ".", []],
+  // The schema being typed is not itself a table reference, even when a table
+  // of that name exists: "FROM ext." lists ext's tables, not fnn_fy_his's columns.
+  ["SELECT * FROM ext|", ".", ["rpt_rcv_evnt"]],
+  ["SELECT * FROM cms.fnn_fy_his JOIN ext|", ".", ["rpt_rcv_evnt"]],
+  // Once the reference is complete, the same word answers for the table again.
+  ["SELECT * FROM cms.ext WHERE ext|;", ".", ["ext_col"]],
 ] as const)("supports JOIN columns, case-insensitive prefixes and dot completion: %s", async (source, insert, expected) => {
   let view!: EditorView;
   const pos = source.indexOf("|");

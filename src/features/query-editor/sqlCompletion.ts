@@ -29,7 +29,10 @@ function options(items: Array<{ label: string; detail?: string }>): Completion[]
 const NOT_AN_ALIAS = "on|using|where|group|order|having|window|limit|offset|fetch|union|intersect|except|join|inner|outer|left|right|full|cross|natural|lateral|and|or|not|set|returning|for|into|select|from|as|values|with";
 // The alias must not swallow the keyword that ends the reference, or the JOIN
 // after a FROM would never be seen as a reference of its own.
-const REFERENCE = String.raw`\b(?:from|join)\s+(?:"?([\w$]+)"?\s*\.\s*)?"?([\w$]+)"?(?:\s+(?:as\s+)?(?!(?:${NOT_AN_ALIAS})\b)"?([\w$]+)"?)?`;
+// The trailing lookahead drops a half-typed "schema." — without it the schema
+// being qualified is read as a bare table name, and a table that happens to
+// share that name answers with its columns.
+const REFERENCE = String.raw`\b(?:from|join)\s+(?:"?([\w$]+)"?\s*\.\s*)?"?([\w$]+)"?(?!\s*\.)(?:\s+(?:as\s+)?(?!(?:${NOT_AN_ALIAS})\b)"?([\w$]+)"?)?`;
 
 type Reference = { table: Catalog; alias?: string };
 
