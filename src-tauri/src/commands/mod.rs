@@ -30,6 +30,30 @@ pub struct AiChatCancelRequest { pub request_id: String }
 #[serde(rename_all = "camelCase", tag = "type")]
 pub enum AiChatEvent { Chunk { text: String }, Progress { text: String }, Completed, Failed { message: String } }
 
+/// Read-only tools the AI panel may use. `claude -p` is non-interactive, so
+/// nobody is there to answer a permission prompt and anything not listed here
+/// is denied outright. Schema inspection only: writing a query is the panel's
+/// job, running one is the editor's, so `run_query` is deliberately absent.
+const AI_ALLOWED_TOOLS: [&str; 17] = [
+    "Read",
+    "Grep",
+    "Glob",
+    "mcp__niv-db__db_overview",
+    "mcp__niv-db__list_schemas",
+    "mcp__niv-db__list_tables",
+    "mcp__niv-db__describe_table",
+    "mcp__niv-db__search_columns",
+    "mcp__niv-db__column_stats",
+    "mcp__niv-db__table_stats",
+    "mcp__niv-db__row_count",
+    "mcp__niv-db__list_indexes",
+    "mcp__niv-db__list_foreign_keys",
+    "mcp__niv-db__list_functions",
+    "mcp__niv-db__sample_data",
+    "mcp__niv-db__generate_erd_mermaid",
+    "mcp__niv-db__generate_data_dictionary",
+];
+
 #[tauri::command]
 pub async fn ai_chat(
     state: State<'_, AppState>,
@@ -55,6 +79,7 @@ pub async fn ai_chat(
         "--model",
         &request.model,
     ]);
+    command.arg("--allowedTools").args(AI_ALLOWED_TOOLS);
     if request.thinking != "auto" {
         command.args(["--effort", &request.thinking]);
     }
