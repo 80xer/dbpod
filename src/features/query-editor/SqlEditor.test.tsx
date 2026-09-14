@@ -47,6 +47,16 @@ it.each([
   ["SELECT * FROM cms.fnn_fy_his WHERE |;", "C", ["clsg_ym", "comp_cd"]],
   ["SELECT * FROM cms|", ".", ["fnn_fy_his"]],
   ["SELECT cms.fnn_fy_his| FROM cms.fnn_fy_his;", ".", ["clsg_ym", "comp_cd", "stk_cd"]],
+  // An alias resolves to its own table, from either side of the statement.
+  ["SELECT f| FROM cms.fnn_fy_his f;", ".", ["clsg_ym", "comp_cd", "stk_cd"]],
+  ["SELECT * FROM cms.fnn_fy_his AS f WHERE f|;", ".", ["clsg_ym", "comp_cd", "stk_cd"]],
+  ["SELECT * FROM cms.fnn_fy_his f JOIN ext.rpt_rcv_evnt r ON r|;", ".", ["created_at", "rpt_std_dt"]],
+  ["SELECT * FROM cms.fnn_fy_his f JOIN ext.rpt_rcv_evnt r ON f|;", ".", ["clsg_ym", "comp_cd", "stk_cd"]],
+  // An unaliased table answers to its own name, and a schema still lists tables.
+  ["SELECT * FROM cms.fnn_fy_his WHERE fnn_fy_his|;", ".", ["clsg_ym", "comp_cd", "stk_cd"]],
+  ["SELECT * FROM cms.fnn_fy_his WHERE ext|;", ".", ["rpt_rcv_evnt"]],
+  // WHERE is a keyword, never the alias of the table before it.
+  ["SELECT * FROM cms.fnn_fy_his WHERE where|;", ".", []],
 ] as const)("supports JOIN columns, case-insensitive prefixes and dot completion: %s", async (source, insert, expected) => {
   let view!: EditorView;
   const pos = source.indexOf("|");
