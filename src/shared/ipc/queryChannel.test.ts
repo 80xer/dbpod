@@ -42,7 +42,7 @@ afterEach(() => {
 
 it.each<Extract<QueryStreamEvent, { type: "completed" | "failed" | "cancelled" }>>([
   completed,
-  { type: "failed", executionId: accepted.executionId, error: { code: "QUERY_ERROR", message: "bad SQL", retryable: false, sqlState: "42601", position: null, detail: null, hint: null }, durationMs: 2, transactionState: "failed-transaction" },
+  { type: "failed", executionId: accepted.executionId, error: { code: "QUERY_ERROR", message: "bad SQL", retryable: false, sqlState: "42601", position: 8, detail: "syntax error details", hint: "check the column name" }, durationMs: 2, transactionState: "failed-transaction" },
   { type: "cancelled", executionId: accepted.executionId, receivedRowCount: 0, durationMs: 2, transactionState: "idle" },
 ])("does not restart a $type execution when its invoke response arrives late", async (terminal) => {
   const pending = pendingInvoke();
@@ -56,6 +56,7 @@ it.each<Extract<QueryStreamEvent, { type: "completed" | "failed" | "cancelled" }
   await expect(running).resolves.toEqual(accepted);
   expect(currentTab()).toMatchObject({ sessionId: accepted.sessionId, runningExecutionId: undefined, transactionState: terminal.transactionState });
   expect(resultStore.getSnapshot(request.resultTabId).status).toBe(terminal.type);
+  if (terminal.type === "failed") expect(resultStore.getSnapshot(request.resultTabId).error).toEqual(terminal.error);
   expect(historyStore.list()).toHaveLength(1);
   expect(historyStore.list()[0]).toMatchObject({ connectionId: "A", sql: request.sql, status: terminal.type });
 });
@@ -79,6 +80,20 @@ it("clears the owning workspace on invoke failure and leaves other connections u
   expect(currentTab().resultTabs[0].isRunning).toBe(false);
   expect(resultStore.getSnapshot(request.resultTabId)).toMatchObject({ status: "failed", error: { message: "connection lost" } });
   expect(workspaceStates.get("B")).toBe(otherWorkspace);
+});
+
+it.each(["query", "table"])("preserves structured error details when the %s invoke rejects", async (kind) => {
+  const error = { code: "POSTGRES_ERROR", message: "bad SQL", retryable: false,
+    sqlState: "42601", position: 8, detail: "syntax error details", hint: "check the column name" };
+  vi.mocked(ipc.queryExecute).mockRejectedValue(error);
+  vi.mocked(ipc.tableDataExecute).mockRejectedValue(error);
+  const resultTabId = kind === "query" ? request.resultTabId : "A-tab:data";
+  const running = kind === "query" ? runQuery(request) : runTableData({
+    connectionId: "A", queryTabId: "A-tab", resultTabId, relationOid: 42,
+    sortAttribute: null, sortDescending: false, limit: 200, offset: 0,
+  });
+  await expect(running).rejects.toEqual(error);
+  expect(resultStore.getSnapshot(resultTabId)).toMatchObject({ status: "failed", error });
 });
 
 it("acks stale chunks without writing them into a replacement result", async () => {

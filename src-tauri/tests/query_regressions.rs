@@ -16,7 +16,7 @@ use dbpod_lib::infrastructure::postgres::transport::build_connect_options;
 use dbpod_lib::state::{AppState, Workspace};
 use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
-use testcontainers_modules::testcontainers::{ContainerAsync, ImageExt};
+use testcontainers_modules::testcontainers::{core::IntoContainerPort, ContainerAsync, ImageExt};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::time::{timeout, Duration};
 
@@ -46,6 +46,11 @@ async fn setup() -> (ContainerAsync<Postgres>, AppState) {
         .start()
         .await
         .expect("start postgres");
+    let state = state_for_container(&node).await;
+    (node, state)
+}
+
+async fn state_for_container(node: &ContainerAsync<Postgres>) -> AppState {
     let port = node.get_host_port_ipv4(5432).await.expect("mapped port");
     let opts = build_connect_options(
         "127.0.0.1",
@@ -68,7 +73,7 @@ async fn setup() -> (ContainerAsync<Postgres>, AppState) {
             sessions: HashMap::new(),
         },
     );
-    (node, state)
+    state
 }
 
 #[tokio::test]
@@ -664,6 +669,90 @@ async fn paged_results_deliver_200_rows_and_fetch_the_same_execution_without_rep
     )
     .unwrap();
     assert!(fetch(&replacement.execution_id, 200).is_err());
+}
+
+#[tokio::test]
+async fn query_tab_reconnects_after_database_restart() {
+    use sqlx::Connection;
+
+    // Docker can reassign an automatic host port on restart; keep the DB endpoint fixed.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let node = Postgres::default()
+        .with_tag("17-alpine")
+        .with_mapped_port(port, 5432.tcp())
+        .start()
+        .await
+        .unwrap();
+    let state = state_for_container(&node).await;
+    let opts = state.workspaces.lock().unwrap()[CONN_ID]
+        .connect_opts
+        .clone();
+    for failed_transaction in [false, true] {
+        let initial = review_execute(&state, "SELECT 1", 10).await;
+        assert!(matches!(
+            initial.last(),
+            Some(QueryStreamEvent::Completed { .. })
+        ));
+        let session = state.workspaces.lock().unwrap()[CONN_ID].sessions["review"].clone();
+        if failed_transaction {
+            review_execute(&state, "BEGIN", 10).await;
+            let failed = review_execute(&state, "SELECT missing_column", 10).await;
+            assert!(matches!(
+                failed.last(),
+                Some(QueryStreamEvent::Failed {
+                    transaction_state: TransactionState::FailedTransaction,
+                    ..
+                })
+            ));
+        }
+
+        node.stop_with_timeout(Some(0)).await.unwrap();
+        // Failed transactions skip SET; use uncached SQL to exercise prepare failure too.
+        let sql = if failed_transaction {
+            "SELECT 43"
+        } else {
+            "SELECT 42"
+        };
+        let disconnected = review_execute(&state, sql, 10).await;
+        assert!(matches!(
+            disconnected.last(),
+            Some(QueryStreamEvent::Failed { .. })
+        ));
+        node.start().await.unwrap();
+        // Wait for PostgreSQL readiness independently; retry the user's query only once.
+        let observer = timeout(Duration::from_secs(15), async {
+            loop {
+                if let Ok(conn) = sqlx::PgConnection::connect_with(&opts).await {
+                    break conn;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("restarted database is ready");
+        observer.close().await.unwrap();
+
+        let recovered = review_execute(&state, sql, 10).await;
+        assert!(
+            matches!(
+                recovered.last(),
+                Some(QueryStreamEvent::Completed {
+                    transaction_state: TransactionState::Idle,
+                    row_count: 1,
+                    ..
+                })
+            ),
+            "query tab did not recover: {recovered:?}"
+        );
+        assert_eq!(recovered.iter().filter(|e| is_terminal(e)).count(), 1);
+        assert_eq!(
+            state.workspaces.lock().unwrap()[CONN_ID].sessions["review"].session_id,
+            session.session_id
+        );
+        assert_eq!(*session.transaction.lock().unwrap(), TransactionState::Idle);
+    }
 }
 
 #[tokio::test]

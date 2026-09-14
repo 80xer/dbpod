@@ -4,6 +4,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::Command;
+use ts_rs::TS;
 
 use tauri::ipc::Channel;
 use tauri::State;
@@ -13,7 +14,7 @@ use crate::domain::*;
 use crate::error::AppError;
 use crate::state::AppState;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct AiChatRequest {
     pub provider: String,
@@ -22,10 +23,10 @@ pub struct AiChatRequest {
     pub prompt: String,
     pub request_id: Option<String>,
 }
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct AiChatCancelRequest { pub request_id: String }
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase", tag = "type")]
 pub enum AiChatEvent { Chunk { text: String }, Progress { text: String }, Completed, Failed { message: String } }
 

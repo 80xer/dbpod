@@ -97,7 +97,7 @@ export function SqlEditor({
         extensions: [
           basicSetup,
           sql({ dialect: postgresWithRoutineBodies }),
-          ...(connectionId && database ? [autocompletion({ override: [sqlCompletionSource(connectionId, database)] })] : []),
+          ...(connectionId && database ? [autocompletion({ override: [sqlCompletionSource(connectionId, database)], filterStrict: true })] : []),
           syntaxHighlighting(dbpodHighlightStyle),
           EditorState.readOnly.of(readOnly),
           EditorView.editable.of(!readOnly),

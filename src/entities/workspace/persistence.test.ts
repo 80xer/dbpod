@@ -59,6 +59,9 @@ test("migrates legacy drafts to the initial database and saves each database ind
   expect(saved.find((c: { database: string }) => c.database === "postgres").tabs[0].sql).toBe("SELECT 'default'");
   expect(saved.find((c: { database: string }) => c.database === "analytics").tabs[0].sql).toBe("SELECT 'analytics'");
   expect(saved.find((c: { database: string }) => c.database === "analytics").tabs).toHaveLength(1);
+  expect(saved.find((c: { database: string }) => c.database === "analytics").tabGroups).toEqual([
+    expect.objectContaining({ tabIds: ["analytics-tab"], activeTabId: "analytics-tab" }),
+  ]);
   expect(saved.find((c: { database: string }) => c.database === "archive").tabs[0].sql).toBe("SELECT 'archive'");
   expect(sqlDrafts.get(p.restoreWorkspace(profile.id, "analytics")!.tabs[0].id)).toBe("SELECT 'analytics'");
   expect(sqlDrafts.get(p.restoreWorkspace(profile.id, "postgres")!.tabs[0].id)).toBe("SELECT 'default'");
@@ -94,4 +97,10 @@ test("persists and restores split tab groups", async () => {
   const restored = p.restoreWorkspace("split-profile", "postgres")!;
   expect(restored.tabGroups).toEqual(groups);
   expect(restored.tabs.map((tab) => tab.id)).toEqual(["left", "right", "right-2"]);
+
+  openConnections.set("conn", profile);
+  workspaceStates.set("conn", emptyWorkspace());
+  await p.saveWorkspaceNow();
+  expect(mocks.save.mock.lastCall![0].connections[0].tabGroups).toEqual([]);
+  openConnections.delete("conn"); workspaceStates.clear(); sqlDrafts.clear();
 });

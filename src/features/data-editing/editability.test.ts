@@ -11,8 +11,8 @@ const meta: TableMetadata = {
   name: "people",
   kind: "table",
   columns: [
-    { attributeNumber: 1, name: "id", pgTypeOid: 23, pgTypeName: "integer", nullable: false, defaultExpr: null, isGenerated: false, isPrimaryKey: true },
-    { attributeNumber: 2, name: "name", pgTypeOid: 25, pgTypeName: "text", nullable: true, defaultExpr: null, isGenerated: false, isPrimaryKey: false },
+    { attributeNumber: 1, name: "id", pgTypeOid: 23, pgTypeName: "integer", nullable: false, defaultExpr: null, comment: null, isGenerated: false, isPrimaryKey: true },
+    { attributeNumber: 2, name: "name", pgTypeOid: 25, pgTypeName: "text", nullable: true, defaultExpr: null, comment: null, isGenerated: false, isPrimaryKey: false },
   ],
   primaryKey: [1],
   uniqueKeys: [],

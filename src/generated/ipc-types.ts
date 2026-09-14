@@ -31,6 +31,12 @@ export type ConnectionCloseRequest = { connectionId: string, };
 
 export type VaultStatus = { state: string, secureStorageAvailable: boolean, };
 
+export type AiChatRequest = { provider: string, model: string, thinking: string, prompt: string, requestId: string | null, };
+
+export type AiChatCancelRequest = { requestId: string, };
+
+export type AiChatEvent = { "type": "chunk", text: string, } | { "type": "progress", text: string, } | { "type": "completed" } | { "type": "failed", message: string, };
+
 export type TemporalType = "date" | "time" | "timetz" | "timestamp" | "timestamptz" | "interval";
 
 export type JsonType = "json" | "jsonb";
@@ -122,6 +128,8 @@ export type TableDataExecuteRequest = { connectionId: string, queryTabId: string
 sortAttribute: number | null, sortDescending: boolean, limit: number, offset: number, };
 
 export type TabSnapshot = { title: string, sql: string, id: string | null, };
+
+export type TabGroupSnapshot = { id: string, tabIds: Array<string>, activeTabId: string | null, };
 
 export type ConnectionSnapshot = { profileId: string, database: string | null, activeTabIndex: number | null, tabs: Array<TabSnapshot>, tabGroups: Array<TabGroupSnapshot>, };
 

@@ -14,8 +14,8 @@ const columns: ColumnMeta[] = [
   { index: 2, name: "name", pgTypeOid: 25, pgTypeName: "text", category: "text", source: { relationOid: 1, attributeNumber: 2 }, nullable: true, editable: false },
 ];
 const meta: TableMetadata = { relationOid: 1, schema: "public", name: "target", kind: "table", primaryKey: [1], uniqueKeys: [], rowLevelSecurity: false, columns: [
-  { attributeNumber: 1, name: "id", pgTypeOid: 23, pgTypeName: "integer", nullable: false, defaultExpr: null, isGenerated: false, isPrimaryKey: true },
-  { attributeNumber: 2, name: "name", pgTypeOid: 25, pgTypeName: "text", nullable: true, defaultExpr: null, isGenerated: false, isPrimaryKey: false },
+  { attributeNumber: 1, name: "id", pgTypeOid: 23, pgTypeName: "integer", nullable: false, defaultExpr: null, comment: null, isGenerated: false, isPrimaryKey: true },
+  { attributeNumber: 2, name: "name", pgTypeOid: 25, pgTypeName: "text", nullable: true, defaultExpr: null, comment: null, isGenerated: false, isPrimaryKey: false },
 ] };
 const info = tableDataEditability(columns, meta, false);
 if (!info.editable) throw new Error("invalid fixture");

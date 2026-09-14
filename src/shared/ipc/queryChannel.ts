@@ -109,7 +109,8 @@ async function start(
       const e = err as Partial<import("../../generated/ipc-types").AppError>;
       resultStore.setTerminal(resultTabId, { status: "failed", error: {
         code: e?.code ?? "QUERY_FAILED", message: e?.message ?? String(err), retryable: false,
-        sqlState: e?.sqlState ?? null, position: e?.position ?? null, detail: null, hint: null,
+        sqlState: e?.sqlState ?? null, position: e?.position ?? null,
+        detail: e?.detail ?? null, hint: e?.hint ?? null,
       } });
       finish();
     }

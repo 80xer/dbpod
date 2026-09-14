@@ -408,12 +408,40 @@ export function ResultGrid({ resultTabId, hiddenColumns, sort, onHeaderClick, ed
   return (
     <div className="flex h-full min-h-0 flex-col">
       {message && <p role="alert" className="bg-amber-50 px-3 py-1 text-xs text-amber-800">{message}</p>}
+      {snapshot.status === "failed" && (
+        <section
+          role="alert"
+          aria-label="쿼리 실행 오류"
+          tabIndex={0}
+          className={`min-h-0 overflow-auto border-t border-gray-200 p-4 ${snapshot.rows.length ? "max-h-[60%] shrink-0" : "flex-1"}`}
+        >
+          <div className="rounded-lg border border-red-300 bg-gray-50 p-4 text-sm text-gray-800">
+            <h3 className="mb-3 font-semibold">쿼리 실행 오류</h3>
+            <p className="whitespace-pre-wrap break-words font-mono">{snapshot.error?.message ?? "알 수 없는 오류가 발생했습니다."}</p>
+            <dl className="mt-4 space-y-3">
+              {[
+                ["SQLSTATE", snapshot.error?.sqlState],
+                ["오류 코드", snapshot.error?.code],
+                ["상세 정보", snapshot.error?.detail],
+                ["힌트", snapshot.error?.hint],
+                ["오류 위치", snapshot.error?.position != null ? `${snapshot.error.position}번째 문자` : null],
+              ].filter(([, value]) => value != null).map(([label, value]) => (
+                <div key={label} className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-4">
+                  <dt className="font-medium text-gray-500">{label}</dt>
+                  <dd className="min-w-0 whitespace-pre-wrap break-words font-mono">{value}</dd>
+                </div>
+              ))}
+            </dl>
+          </div>
+        </section>
+      )}
       <div
         ref={parentRef}
         onScroll={loadNearEnd}
         onPaste={onPaste}
         onKeyDown={onKeyDown}
         tabIndex={0}
+        hidden={snapshot.status === "failed" && snapshot.rows.length === 0}
         className="min-h-0 flex-1 overflow-auto border-t border-gray-200 outline-none focus-visible:ring-1 focus-visible:ring-blue-300"
         role="grid"
         aria-label="쿼리 결과"

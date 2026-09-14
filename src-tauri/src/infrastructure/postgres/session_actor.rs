@@ -314,6 +314,24 @@ fn txn_after_error(txn: TransactionState) -> TransactionState {
     }
 }
 
+/// Drain ReadyForQuery after SQL errors, but release a dead socket for the next execution.
+async fn discard_broken_connection(
+    conn_slot: &mut Option<PgConnection>,
+    backend_pid: &AtomicI32,
+    txn: &mut TransactionState,
+) {
+    if let Some(conn) = conn_slot.as_mut() {
+        if conn.ping().await.is_ok() {
+            return;
+        }
+    }
+    if let Some(conn) = conn_slot.take() {
+        let _ = conn.close_hard().await;
+    }
+    backend_pid.store(0, Ordering::Release);
+    *txn = TransactionState::Idle;
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_execution(
     conn_slot: &mut Option<PgConnection>,
@@ -330,6 +348,8 @@ async fn run_execution(
     let mut started_sent = false;
     macro_rules! fail {
         ($err:expr) => {{
+            let error = $err;
+            discard_broken_connection(conn_slot, backend_pid, txn).await;
             if !started_sent {
                 sink(QueryStreamEvent::Started {
                     execution_id: eid.clone(),
@@ -340,7 +360,7 @@ async fn run_execution(
             *txn = txn_after_error(*txn);
             return QueryStreamEvent::Failed {
                 execution_id: eid.clone(),
-                error: $err,
+                error,
                 duration_ms: start.elapsed().as_millis() as u64,
                 transaction_state: *txn,
             };
@@ -401,10 +421,7 @@ async fn run_execution(
         .await
     {
         Ok(s) => s,
-        Err(e) => {
-            let _ = conn.ping().await;
-            fail!(AppError::from_sqlx(&e));
-        }
+        Err(e) => fail!(AppError::from_sqlx(&e)),
     };
     let columns: Vec<ColumnMeta> = decoder::column_meta(stmt.columns());
     let has_result_set = !columns.is_empty();
@@ -514,12 +531,8 @@ async fn run_execution(
         }
     }
     // Consume the pending ReadyForQuery after errors, without issuing SQL in an aborted transaction.
-    if sql_err.is_some() && conn.ping().await.is_err() {
-        if let Some(c) = conn_slot.take() {
-            let _ = c.close_hard().await;
-        }
-        backend_pid.store(0, Ordering::Release);
-        *txn = TransactionState::Idle;
+    if sql_err.is_some() {
+        discard_broken_connection(conn_slot, backend_pid, txn).await;
     }
     if sql_err.is_none() && !buf.is_empty() && !flush_chunk(&mut buf, &mut seq, exec, sink).await {
         truncated = true;

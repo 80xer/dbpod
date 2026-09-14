@@ -1,10 +1,60 @@
 // @vitest-environment jsdom
+import { currentCompletions } from "@codemirror/autocomplete";
 import type { EditorView } from "@codemirror/view";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { SqlEditor } from "./SqlEditor";
 
+vi.mock("../../shared/ipc/invoke", () => ({ ipc: {
+  metadataListSchemas: vi.fn(async () => [{ oid: 1, name: "cms" }, { oid: 2, name: "ext" }]),
+  metadataListObjects: vi.fn(async () => [
+    { oid: 10, schema: "cms", name: "fnn_fy_his", kind: "table" },
+    { oid: 20, schema: "ext", name: "rpt_rcv_evnt", kind: "table" },
+  ]),
+  metadataGetTable: vi.fn(async ({ relationOid }: { relationOid: number }) => ({
+    columns: (relationOid === 10 ? ["clsg_ym", "comp_cd", "stk_cd"] : ["created_at", "rpt_std_dt"])
+      .map((name) => ({ name })),
+  })),
+} }));
+
 afterEach(cleanup);
+
+it.each([
+  "SELECT | FROM cms.fnn_fy_his;",
+  "SELECT * FROM cms.fnn_fy_his WHERE |;",
+  "SELECT * FROM cms.fnn_fy_his GROUP BY |;",
+  "SELECT * FROM cms.fnn_fy_his ORDER BY |;",
+  "SELECT * FROM ext.rpt_rcv_evnt; SELECT | FROM cms.fnn_fy_his; SELECT * FROM ext.rpt_rcv_evnt;",
+  "SELECT 'from ext.rpt_rcv_evnt; literal', | FROM cms.fnn_fy_his /* join ext.rpt_rcv_evnt */;",
+])("automatically suggests current-statement columns by prefix: %s", async (source) => {
+  let view!: EditorView;
+  const pos = source.indexOf("|");
+  render(<SqlEditor initialSql={source.replace("|", "")} connectionId="completion" database="postgres"
+    onViewReady={(next) => { if (next) view = next; }} />);
+  view.dispatch({ changes: { from: pos, insert: "c" }, selection: { anchor: pos + 1 }, userEvent: "input.type" });
+  const labels = () => currentCompletions(view.state).map((option) => option.label).sort();
+  await waitFor(() => expect(labels()).toEqual(["clsg_ym", "comp_cd"]));
+  view.dispatch({ changes: { from: pos + 1, insert: "o" }, selection: { anchor: pos + 2 }, userEvent: "input.type" });
+  await waitFor(() => expect(labels()).toEqual(["comp_cd"]));
+  view.dispatch({ changes: { from: pos + 1, to: pos + 2 }, selection: { anchor: pos + 1 }, userEvent: "delete.backward" });
+  await waitFor(() => expect(labels()).toEqual(["clsg_ym", "comp_cd"]));
+  view.dispatch({ changes: { from: pos + 1, insert: "p" }, selection: { anchor: pos + 2 }, userEvent: "input.type" });
+  expect(labels()).toEqual([]); // "cp" must not fuzzy-match "comp_cd".
+});
+
+it.each([
+  ["SELECT | FROM cms.fnn_fy_his JOIN ext.rpt_rcv_evnt ON true;", "c", ["clsg_ym", "comp_cd", "created_at"]],
+  ["SELECT * FROM cms.fnn_fy_his WHERE |;", "C", ["clsg_ym", "comp_cd"]],
+  ["SELECT * FROM cms|", ".", ["fnn_fy_his"]],
+  ["SELECT cms.fnn_fy_his| FROM cms.fnn_fy_his;", ".", ["clsg_ym", "comp_cd", "stk_cd"]],
+] as const)("supports JOIN columns, case-insensitive prefixes and dot completion: %s", async (source, insert, expected) => {
+  let view!: EditorView;
+  const pos = source.indexOf("|");
+  render(<SqlEditor initialSql={source.replace("|", "")} connectionId="completion" database="postgres"
+    onViewReady={(next) => { if (next) view = next; }} />);
+  view.dispatch({ changes: { from: pos, insert }, selection: { anchor: pos + insert.length }, userEvent: "input.type" });
+  await waitFor(() => expect(currentCompletions(view.state).map((option) => option.label).sort()).toEqual(expected));
+});
 
 it.each([true, false])("highlights routine bodies without treating dollar-quoted values as code (readOnly=%s)", (readOnly) => {
   const source = `CREATE OR REPLACE PROCEDURE cms.example() LANGUAGE plpgsql AS $procedure$

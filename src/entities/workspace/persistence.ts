@@ -97,16 +97,15 @@ function buildSnapshot(): WorkspaceSnapshot {
     byProfile.set(key(profile.id, profile.database), {
       profileId: profile.id,
       database: profile.database,
-      tabGroups: queryTabs.length ? getTabGroups(state)
-      .filter((group) => group.tabIds.some((id) => queryTabs.some((tab) => tab.id === id)))
-      .map((group) => ({
-        ...group,
-        tabIds: group.tabIds.filter((id) => queryTabs.some((tab) => tab.id === id)),
-        activeTabId: (group.activeTabId && group.tabIds.includes(group.activeTabId))
-          ? group.activeTabId
-          : group.tabIds[0] ?? null,
-      }))
-        .filter((group) => group.tabIds.length > 0) : null,
+      tabGroups: getTabGroups(state).map((group) => {
+        const tabIds = group.tabIds.filter((id) => queryTabs.some((tab) => tab.id === id));
+        return {
+          id: group.id,
+          tabIds,
+          activeTabId: group.activeTabId && tabIds.includes(group.activeTabId)
+            ? group.activeTabId : tabIds[0] ?? null,
+        };
+      }).filter((group) => group.tabIds.length > 0),
       activeTabIndex: Math.max(
         0,
         queryTabs.findIndex((t) => t.id === state.activeTabId),

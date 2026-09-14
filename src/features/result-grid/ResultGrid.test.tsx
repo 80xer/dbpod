@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { ResultGrid } from "./ResultGrid";
 import { resultStore } from "../../entities/result/resultStore";
 import { editStore } from "../../entities/result/editStore";
@@ -17,6 +17,32 @@ beforeEach(() => {
   render(<ResultGrid resultTabId="grid" edit={{ editableColumns: new Set(["name"]) }} />);
 });
 afterEach(cleanup);
+test("shows detailed execution errors alongside the footer and clears them on rerun", () => {
+  const error = {
+    code: "POSTGRES_ERROR", message: 'column "missing" does not exist', retryable: false,
+    sqlState: "42703", position: 8, detail: "First line\nSecond line", hint: 'Perhaps you meant "name".',
+  };
+  act(() => { resultStore.setTerminal("grid", { status: "failed", error }); });
+  const details = within(screen.getByRole("alert", { name: "쿼리 실행 오류" }));
+  for (const value of [error.message, error.sqlState, error.code, error.hint, "8번째 문자"])
+    expect(details.getByText(value)).toBeTruthy();
+  expect(details.getByText(/First line/).textContent).toBe(error.detail);
+  expect(screen.getByText(`오류: ${error.message} (SQLSTATE 42703)`)).toBeTruthy();
+  expect(within(screen.getByRole("grid")).getByText("Alpha")).toBeTruthy();
+
+  act(() => { resultStore.create("grid", "SELECT 1"); });
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(screen.queryByText(/오류:/)).toBeNull();
+  act(() => { resultStore.setTerminal("grid", { status: "failed", error: {
+    ...error, code: "CONNECTION_LOST", message: "database connection lost", sqlState: null,
+    position: null, detail: null, hint: null,
+  } }); });
+  expect(within(screen.getByRole("alert")).getByText("database connection lost")).toBeTruthy();
+  for (const label of ["SQLSTATE", "상세 정보", "힌트", "오류 위치"])
+    expect(screen.queryByText(label)).toBeNull();
+  expect(screen.queryByRole("grid")).toBeNull();
+});
+
 test("keyboard navigation edits the focused cell and Escape discards the active editor", () => {
   const grid = screen.getByRole("grid");
   fireEvent.keyDown(grid, { key: "ArrowDown" }); fireEvent.keyDown(grid, { key: "ArrowRight" }); fireEvent.keyDown(grid, { key: "Enter" });

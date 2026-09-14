@@ -1,6 +1,6 @@
 import type { Completion, CompletionContext, CompletionResult } from "@codemirror/autocomplete";
 import { ipc } from "../../shared/ipc/invoke";
-import { statementAt } from "./statementSplitter";
+import { statementAt, stripLiterals } from "./statementSplitter";
 
 type Catalog = { schema: string; name: string; oid: number; kind: string };
 const catalogCache = new Map<string, Promise<Catalog[]>>();
@@ -29,11 +29,12 @@ export function sqlCompletionSource(connectionId: string, database: string) {
   return async (context: CompletionContext): Promise<CompletionResult | null> => {
     const doc = context.state.doc.toString();
     const current = statementAt(doc, context.pos);
-    if (!current) return null;
+    if (!current || context.pos < current.from || context.pos > current.to) return null;
     const statementFrom = current.from;
-    const statementText = context.state.sliceDoc(statementFrom, current.to);
+    const statementText = stripLiterals(context.state.sliceDoc(statementFrom, current.to));
     const before = statementText.slice(0, context.pos - statementFrom);
     const match = before.match(/((?:"?[\w$]+"?\.){1,2})"?[\w$]*$/);
+    if (!match && !/[\w$]+$/.test(before) && !context.explicit) return null;
     const items = await catalog(connectionId, database);
     if (match) {
       const parts = match[1].split(".").filter(Boolean).map(unquote);
@@ -47,7 +48,9 @@ export function sqlCompletionSource(connectionId: string, database: string) {
       const columns = await tableColumns(connectionId, database, table.oid);
       return { from, options: options(columns.map((label) => ({ label, detail: "column" }))), validFor: /^[\w$]*$/ };
     }
-    const referenced = [...before.matchAll(/(?:from|join)\s+(?:"?([\w$]+)"?\.)?"?([\w$]+)"?/gi)]
+    // FROM can follow the SELECT being edited, so inspect the whole statement.
+    // ponytail: direct FROM/JOIN references; use scope parsing for CTE/derived columns.
+    const referenced = [...statementText.matchAll(/\b(?:from|join)\s+(?:"?([\w$]+)"?\.)?"?([\w$]+)"?/gi)]
       .map((m) => items.find((item) => item.name === unquote(m[2]) && (!m[1] || item.schema === unquote(m[1]))))
       .filter((item): item is Catalog => Boolean(item));
     if (!referenced.length) return null;
