@@ -79,6 +79,7 @@ fn export_ipc_types() {
     decl!(TabSnapshot);
     decl!(TabGroupSnapshot);
     decl!(ConnectionSnapshot);
+    decl!(SavedQuery);
     decl!(WorkspaceSnapshot);
     decl!(InsertCellDraft);
     decl!(PrimaryKeyValue);

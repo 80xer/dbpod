@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { DatabaseObjectSummary } from "../../generated/ipc-types";
 import { ipc } from "../../shared/ipc/invoke";
-import { ObjectSidebar } from "./ObjectSidebar";
+import { ObjectSidebar, resetExpansionState } from "./ObjectSidebar";
 
 vi.mock("../../shared/ipc/invoke", () => ({
   ipc: { metadataListDatabases: vi.fn(), metadataListSchemas: vi.fn(), metadataListObjects: vi.fn(), metadataDropObject: vi.fn() },
@@ -24,6 +24,7 @@ const onChangeDatabase = vi.fn();
 
 beforeEach(() => {
   vi.clearAllMocks();
+  resetExpansionState();
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   vi.mocked(ipc.metadataListDatabases).mockResolvedValue([{ name: "postgres", canConnect: true }, { name: "analytics", canConnect: true }, { name: "template0", canConnect: false }]);
   vi.mocked(ipc.metadataListSchemas).mockResolvedValue([{ oid: 1, name: "public", isSystem: false }]);
@@ -44,15 +45,15 @@ it("nests partitions, preserves table opening and collapses whole branches", asy
   expect(expand.getAttribute("aria-expanded")).toBe("false");
   expect(screen.queryByRole("button", { name: "orders_2026" })).toBeNull();
   expect(screen.getByRole("button", { name: "customers" })).toBeTruthy();
-  fireEvent.click(screen.getByRole("button", { name: "orders" }));
+  fireEvent.doubleClick(screen.getByRole("button", { name: "orders" }));
   expect(onOpenObject).toHaveBeenLastCalledWith(parent);
 
   fireEvent.click(expand);
   expect(onOpenObject).toHaveBeenCalledTimes(1);
-  expect((screen.getByRole("button", { name: "restricted" }) as HTMLButtonElement).disabled).toBe(true);
+  expect(screen.getByRole("button", { name: "restricted" }).getAttribute("aria-disabled")).toBe("true");
   expect(screen.queryByRole("button", { name: "archive.september" })).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "orders_2026 파티션" }));
-  fireEvent.click(screen.getByRole("button", { name: "archive.september" }));
+  fireEvent.doubleClick(screen.getByRole("button", { name: "archive.september" }));
   expect(onOpenObject).toHaveBeenLastCalledWith(leaf);
 
   fireEvent.click(expand);
@@ -109,8 +110,8 @@ it("allows expanding a parent without SELECT permission", async () => {
   mount();
   fireEvent.click(await screen.findByRole("button", { name: "public Tables" }));
   fireEvent.click(await screen.findByRole("button", { name: "orders 파티션" }));
-  expect((screen.getByRole("button", { name: "orders" }) as HTMLButtonElement).disabled).toBe(true);
-  fireEvent.click(screen.getByRole("button", { name: "orders_2026" }));
+  expect(screen.getByRole("button", { name: "orders" }).getAttribute("aria-disabled")).toBe("true");
+  fireEvent.doubleClick(screen.getByRole("button", { name: "orders_2026" }));
   expect(onOpenObject).toHaveBeenLastCalledWith(branch);
 });
 
@@ -143,4 +144,85 @@ it("lists all databases and separates lazy table/function folders with overloade
   fireEvent.click(functions);
   expect(screen.queryByText("lookup(integer)")).toBeNull();
   expect(screen.getByRole("button", { name: "orders" })).toBeTruthy();
+});
+
+it("walks rows with the arrow keys and opens the focused one with Enter", async () => {
+  mount();
+  const tree = screen.getByRole("tree");
+  const tables = await screen.findByRole("button", { name: "public Tables" });
+  fireEvent.click(tables);
+  await screen.findByRole("button", { name: "customers" });
+
+  // public → Tables → orders → customers, skipping the partition toggle.
+  screen.getByRole("button", { name: "public" }).focus();
+  for (const name of ["public Tables", "orders", "customers"]) {
+    fireEvent.keyDown(tree, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(screen.getByRole("button", { name }));
+  }
+  fireEvent.keyDown(tree, { key: "ArrowUp" });
+  expect(document.activeElement).toBe(screen.getByRole("button", { name: "orders" }));
+
+  fireEvent.keyDown(document.activeElement!, { key: "ArrowRight" });
+  expect(screen.getByRole("button", { name: "orders_2026" })).toBeTruthy();
+  fireEvent.keyDown(document.activeElement!, { key: "Enter" });
+  expect(onOpenObject).toHaveBeenLastCalledWith(parent);
+});
+
+it("steps into children and back out to parents with the left and right arrows", async () => {
+  mount();
+  const schema = await screen.findByRole("button", { name: "public" });
+  schema.focus();
+
+  // Right on an open row moves inward; on a closed one it opens first.
+  fireEvent.keyDown(schema, { key: "ArrowRight" });
+  const tables = await screen.findByRole("button", { name: "public Tables" });
+  expect(document.activeElement).toBe(tables);
+  fireEvent.keyDown(tables, { key: "ArrowRight" });
+  expect(tables.getAttribute("aria-expanded")).toBe("true");
+  const orders = await screen.findByRole("button", { name: "orders" });
+  fireEvent.keyDown(tables, { key: "ArrowRight" });
+  expect(document.activeElement).toBe(orders);
+  fireEvent.keyDown(orders, { key: "ArrowRight" });
+  fireEvent.keyDown(orders, { key: "ArrowRight" });
+  expect(document.activeElement).toBe(screen.getByRole("button", { name: "orders_2026" }));
+
+  // Left closes what is open, then walks back up one level at a time.
+  fireEvent.keyDown(document.activeElement!, { key: "ArrowLeft" });
+  expect(document.activeElement).toBe(orders);
+  fireEvent.keyDown(orders, { key: "ArrowLeft" });
+  expect(screen.queryByRole("button", { name: "orders_2026" })).toBeNull();
+  fireEvent.keyDown(orders, { key: "ArrowLeft" });
+  expect(document.activeElement).toBe(tables);
+  fireEvent.keyDown(tables, { key: "ArrowLeft" });
+  fireEvent.keyDown(tables, { key: "ArrowLeft" });
+  expect(document.activeElement).toBe(schema);
+  fireEvent.keyDown(schema, { key: "ArrowLeft" });
+  fireEvent.keyDown(schema, { key: "ArrowLeft" });
+  expect(document.activeElement).toBe(schema);
+});
+
+it("focuses the row that was clicked, including through its expand arrow", async () => {
+  mount();
+  const tables = await screen.findByRole("button", { name: "public Tables" });
+  fireEvent.click(tables);
+  expect(document.activeElement).toBe(tables);
+
+  const orders = await screen.findByRole("button", { name: "orders" });
+  fireEvent.click(orders);
+  expect(document.activeElement).toBe(orders);
+
+  fireEvent.click(screen.getByRole("button", { name: "orders 파티션" }));
+  expect(document.activeElement).toBe(orders);
+});
+
+it("keeps a table without SELECT focusable but refuses to open it", async () => {
+  mount();
+  fireEvent.click(await screen.findByRole("button", { name: "public Tables" }));
+  fireEvent.click(await screen.findByRole("button", { name: "orders 파티션" }));
+  const restricted = screen.getByRole("button", { name: "restricted" });
+  restricted.focus();
+  expect(document.activeElement).toBe(restricted);
+  fireEvent.keyDown(restricted, { key: "Enter" });
+  fireEvent.doubleClick(restricted);
+  expect(onOpenObject).not.toHaveBeenCalled();
 });

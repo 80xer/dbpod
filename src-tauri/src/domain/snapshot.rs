@@ -8,6 +8,18 @@ use ts_rs::TS;
 pub struct WorkspaceSnapshot {
     pub version: u32,
     pub connections: Vec<ConnectionSnapshot>,
+    /// Named SQL snippets, deliberately global: not scoped to a profile or database.
+    #[serde(default)]
+    pub saved_queries: Vec<SavedQuery>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedQuery {
+    pub id: String,
+    pub name: String,
+    pub sql: String,
+    pub updated_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

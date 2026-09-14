@@ -22,6 +22,7 @@ import {
 } from "../../entities/workspace/workspaceStore";
 import { ObjectSidebar } from "../../features/object-explorer/ObjectSidebar";
 import { HistoryPanel } from "../../features/query-history/HistoryPanel";
+import { SavedQueriesPanel } from "../../features/saved-queries/SavedQueriesPanel";
 import type { DatabaseObjectSummary } from "../../generated/ipc-types";
 import {
   firstKeyword,
@@ -29,6 +30,7 @@ import {
   stripLiterals,
 } from "../../features/query-editor/statementSplitter";
 import { ipc } from "../../shared/ipc/invoke";
+import { promptText } from "../../shared/ui/prompt";
 import { runQuery } from "../../shared/ipc/queryChannel";
 import { getAppSettings } from "../../entities/settings/appSettings";
 import { displayShortcut, shortcutDigit, shortcutMatches, type ShortcutId } from "../../entities/settings/shortcuts";
@@ -75,7 +77,7 @@ function WorkspaceContent({ connectionId }: { connectionId: string }) {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [sidebarWidth, setSidebarWidth] = useState(224);
   const sidebarResizeStart = useRef<{ pointerId: number; x: number; width: number } | null>(null);
-  const [historyOpen, setHistoryOpen] = useState(false);
+  const [sidePanel, setSidePanel] = useState<"history" | "saved" | null>(null);
   const [changingDatabase, setChangingDatabase] = useState(false);
   const editorViews = useRef(new Map<string, EditorView>());
   const focusEditor = useRef<string | null>(null);
@@ -92,6 +94,11 @@ function WorkspaceContent({ connectionId }: { connectionId: string }) {
       view.focus();
     }
   }, [connectionId, dispatch]);
+  const openSqlInNewTab = useCallback((sql: string, title?: string) => {
+    const tabId = crypto.randomUUID();
+    sqlDrafts.set(tabId, sql);
+    dispatch({ type: "TAB_ADDED", tabId, title });
+  }, [dispatch]);
   const addQueryTab = useCallback((split = false, groupId?: string) => {
     dispatchAndFocusEditor({ type: "TAB_ADDED", tabId: crypto.randomUUID(), split, groupId });
   }, [dispatchAndFocusEditor]);
@@ -284,8 +291,8 @@ function WorkspaceContent({ connectionId }: { connectionId: string }) {
     } catch (e) { showError(e); }
   };
 
-  const renameTab = (tab: QueryTabState) => {
-    const title = window.prompt("탭 이름", tab.title);
+  const renameTab = async (tab: QueryTabState) => {
+    const title = await promptText("탭 이름", tab.title);
     if (title?.trim()) dispatch({ type: "TAB_RENAMED", tabId: tab.id, title: title.trim() });
   };
 
@@ -364,12 +371,21 @@ function WorkspaceContent({ connectionId }: { connectionId: string }) {
           </button>
           <button
             type="button"
-            onClick={() => setHistoryOpen(!historyOpen)}
-            aria-pressed={historyOpen}
+            onClick={() => setSidePanel(sidePanel === "history" ? null : "history")}
+            aria-pressed={sidePanel === "history"}
             className="rounded border border-gray-300 px-2 py-1 text-xs text-gray-600 hover:bg-gray-50"
             title="쿼리 이력"
           >
             🕘
+          </button>
+          <button
+            type="button"
+            onClick={() => setSidePanel(sidePanel === "saved" ? null : "saved")}
+            aria-pressed={sidePanel === "saved"}
+            className="rounded border border-gray-300 px-2 py-1 text-xs text-gray-600 hover:bg-gray-50"
+            title="저장된 쿼리"
+          >
+            💾
           </button>
           <button
             type="button"
@@ -443,7 +459,7 @@ function WorkspaceContent({ connectionId }: { connectionId: string }) {
                           role="tab"
                           aria-selected={id === group.activeTabId}
                           onClick={() => dispatchAndFocusEditor({ type: "TAB_ACTIVATED", tabId: id })}
-                          onDoubleClick={() => renameTab(item)}
+                          onDoubleClick={() => void renameTab(item)}
                           className="max-w-[160px] truncate"
                           title={item.title}
                         >
@@ -494,15 +510,19 @@ function WorkspaceContent({ connectionId }: { connectionId: string }) {
         })}
       </div>
         </div>
-        {historyOpen && (
+        {sidePanel === "history" && (
           <HistoryPanel
             connectionId={connectionId}
-            onClose={() => setHistoryOpen(false)}
-            onReopen={(sql) => {
-              const tabId = crypto.randomUUID();
-              sqlDrafts.set(tabId, sql);
-              dispatch({ type: "TAB_ADDED", tabId });
-            }}
+            onClose={() => setSidePanel(null)}
+            onReopen={(sql) => openSqlInNewTab(sql)}
+          />
+        )}
+        {sidePanel === "saved" && (
+          <SavedQueriesPanel
+            currentSql={(activeTab && sqlDrafts.get(activeTab.id)) ?? ""}
+            currentTitle={activeTab?.title ?? ""}
+            onClose={() => setSidePanel(null)}
+            onOpen={(name, sql) => openSqlInNewTab(sql, name)}
           />
         )}
       </div>

@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { DatabaseObjectSummary } from "../../generated/ipc-types";
 import { ipc } from "../../shared/ipc/invoke";
 
@@ -22,11 +22,61 @@ type Props = {
 };
 
 type ObjectNode = { object: DatabaseObjectSummary; children: ObjectNode[] };
+
+/** Hover and keyboard focus must both read against the tree's white ground. */
+const ROW = "hover:bg-blue-50 focus:bg-blue-100 focus:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-blue-500";
+
+/** Arrow keys walk the rows in DOM order, which is exactly the visible order. */
+function moveRowFocus(container: HTMLElement, key: string): void {
+  const rows = [...container.querySelectorAll<HTMLElement>("[data-tree-row]")];
+  if (!rows.length) return;
+  const current = rows.indexOf(document.activeElement as HTMLElement);
+  const index = key === "Home" ? 0
+    : key === "End" ? rows.length - 1
+    : key === "ArrowDown" ? current + 1
+    : current < 0 ? rows.length - 1
+    : current - 1;
+  rows[Math.max(0, Math.min(rows.length - 1, index))].focus();
+}
+
+/** A row's child list is the <ul> right after it, or after the toolbar row it sits in. */
+function childRow(row: HTMLElement): HTMLElement | null {
+  const list = [row.nextElementSibling, row.parentElement?.nextElementSibling]
+    .find((element) => element?.tagName === "UL");
+  return list?.querySelector<HTMLElement>("[data-tree-row]") ?? null;
+}
+
+/** The parent row owns the list this row lives in. Schema rows have none. */
+function parentRow(row: HTMLElement): HTMLElement | null {
+  return row.closest("ul")?.parentElement?.querySelector<HTMLElement>("[data-tree-row]") ?? null;
+}
+
+/**
+ * Right opens a collapsed row and then steps into it; left closes an open one
+ * and then steps back out to its parent. Enter is the row's own job.
+ */
+const treeKeys = (setExpanded: ((next: boolean) => void) | null, expanded: boolean) =>
+  (event: ReactKeyboardEvent) => {
+    const row = event.currentTarget as HTMLElement;
+    if (event.key === "ArrowRight") {
+      event.preventDefault();
+      if (setExpanded && !expanded) setExpanded(true);
+      else childRow(row)?.focus();
+    }
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      if (setExpanded && expanded) setExpanded(false);
+      else parentRow(row)?.focus();
+    }
+  };
 const expansionState = new Map<string, boolean>();
+/** Expansion survives route switches by design; tests need a clean slate. */
+export function resetExpansionState(): void { expansionState.clear(); }
+/** Read through the cache on every render so a changed key (search mode) takes effect. */
 const useExpansion = (key: string, initial: boolean) => {
-  const [open, setOpen] = useState(() => expansionState.get(key) ?? initial);
-  const update = (next: boolean) => { expansionState.set(key, next); setOpen(next); };
-  return [open, update] as const;
+  const [, rerender] = useState(0);
+  const update = (next: boolean) => { expansionState.set(key, next); rerender((n) => n + 1); };
+  return [expansionState.get(key) ?? initial, update] as const;
 };
 
 function ObjectBranch({ node, schema, filter, onOpenObject, onObjectContextMenu }: {
@@ -36,16 +86,19 @@ function ObjectBranch({ node, schema, filter, onOpenObject, onObjectContextMenu 
   onOpenObject: Props["onOpenObject"];
   onObjectContextMenu: (object: DatabaseObjectSummary, x: number, y: number) => void;
 }) {
-  const [branchOpen, setBranchOpen] = useExpansion(`branch:${node.object.oid}`, !!filter);
-  const expanded = branchOpen || !!filter;
+  // A search remembers its own expansion, so collapsing a hit does not fight
+  // the auto-expand, and clearing the search restores the normal-mode view.
+  const [expanded, setBranchOpen] = useExpansion(`branch:${node.object.oid}:${filter ? "search" : ""}`, !!filter);
   const o = node.object;
   const label = o.schema === schema ? o.name : `${o.schema}.${o.name}`;
+  const open = () => { if (o.canSelect !== false) onOpenObject(o); };
   if (o.kind === "function") {
     const signature = `${label}(${o.functionArguments ?? ""})`;
     return <li>
-      <button type="button" onClick={() => onOpenObject(o)} title={`${o.schema}.${signature} 정의 보기`}
+      <button type="button" data-tree-row="" onClick={() => onOpenObject(o)} title={`${o.schema}.${signature} 정의 보기`}
+        onKeyDown={treeKeys(null, false)}
         onContextMenu={(event) => { event.preventDefault(); onObjectContextMenu(o, event.clientX, event.clientY); }}
-        className="flex w-full items-center gap-1.5 py-0.5 pl-5 pr-2 text-left text-xs hover:bg-blue-50">
+        className={`flex w-full items-center gap-1.5 py-0.5 pl-5 pr-2 text-left text-xs ${ROW}`}>
         <span aria-hidden="true" className="text-gray-400">ƒ</span>
         <span className="truncate">{signature}</span>
       </button>
@@ -62,6 +115,7 @@ function ObjectBranch({ node, schema, filter, onOpenObject, onObjectContextMenu 
             type="button"
             aria-label={`${label} 파티션`}
             aria-expanded={expanded}
+            tabIndex={-1}
             onClick={() => setBranchOpen(!expanded)}
             className="w-5 shrink-0 py-0.5 text-xs text-gray-400 hover:bg-blue-50"
           >
@@ -70,10 +124,16 @@ function ObjectBranch({ node, schema, filter, onOpenObject, onObjectContextMenu 
         ) : <span className="w-5 shrink-0" />}
         <button
           type="button"
-          onDoubleClick={() => onOpenObject(o)}
-          disabled={o.canSelect === false}
-          title={o.canSelect === false ? `${label} — SELECT 권한 없음` : `${o.schema}.${o.name} 더블클릭으로 열기`}
-          className="flex min-w-0 flex-1 items-center gap-1.5 py-0.5 pr-2 text-left text-xs hover:bg-blue-50 disabled:cursor-not-allowed disabled:text-gray-300"
+          data-tree-row=""
+          onDoubleClick={() => open()}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") { event.preventDefault(); open(); return; }
+            treeKeys(node.children.length ? setBranchOpen : null, expanded)(event);
+          }}
+          // A table without SELECT stays focusable so its partitions remain reachable.
+          aria-disabled={o.canSelect === false}
+          title={o.canSelect === false ? `${label} — SELECT 권한 없음` : `${o.schema}.${o.name} 더블클릭 또는 Enter로 열기`}
+          className={`flex min-w-0 flex-1 items-center gap-1.5 py-0.5 pr-2 text-left text-xs aria-disabled:cursor-not-allowed aria-disabled:text-gray-300 ${ROW}`}
         >
           <span aria-hidden="true" className="text-gray-400">{KIND_ICON[o.kind] ?? "▪"}</span>
           <span className="truncate">{label}</span>
@@ -107,8 +167,7 @@ function ObjectGroup({
   onObjectContextMenu: (object: DatabaseObjectSummary, x: number, y: number) => void;
   kind: "table" | "function";
 }) {
-  const [groupOpen, setGroupOpen] = useExpansion(`group:${connectionId}:${schemaOid}:${kind}`, !!filter);
-  const open = groupOpen || !!filter;
+  const [open, setGroupOpen] = useExpansion(`group:${connectionId}:${schemaOid}:${kind}${filter ? ":search" : ""}`, !!filter);
   const label = kind === "table" ? "Tables" : "Functions";
   const objects = useQuery({
     queryKey: ["objects", connectionId, schemaOid, kind],
@@ -146,8 +205,10 @@ function ObjectGroup({
     <li>
       <button
         type="button"
+        data-tree-row=""
         onClick={() => setGroupOpen(!open)}
-        className="flex w-full items-center gap-1 px-2 py-1 text-left text-xs font-medium text-gray-700 hover:bg-gray-100"
+        onKeyDown={treeKeys(setGroupOpen, open)}
+        className={`flex w-full items-center gap-1 px-2 py-1 text-left text-xs font-medium text-gray-700 ${ROW}`}
         aria-expanded={open}
         aria-label={`${name} ${label}`}
       >
@@ -180,7 +241,7 @@ function SchemaSection(props: {
 }) {
   const [open, setOpen] = useExpansion(`schema:${props.connectionId}:${props.schemaOid}`, props.name === "public");
   return <div>
-    <button type="button" aria-expanded={open} onClick={() => setOpen(!open)} className="flex w-full items-center gap-1 px-2 py-1 text-left text-xs font-medium text-gray-700 hover:bg-gray-100">
+    <button type="button" data-tree-row="" aria-expanded={open} onClick={() => setOpen(!open)} onKeyDown={treeKeys(setOpen, open)} className={`flex w-full items-center gap-1 px-2 py-1 text-left text-xs font-medium text-gray-700 ${ROW}`}>
       <span aria-hidden="true" className="text-gray-400">{open ? "▾" : "▸"}</span>{props.name}
     </button>
     {open && <ul className="ml-2">
@@ -238,7 +299,7 @@ export function ObjectSidebar({ connectionId, database, changingDatabase, readOn
   });
 
   return (
-    <div className={`flex h-full shrink-0 flex-col border-r border-gray-200 bg-gray-50 ${className ?? "w-56"}`}>
+    <div className={`flex h-full shrink-0 flex-col border-r border-gray-200 ${className ?? "w-56"}`}>
       <div className="shrink-0 p-2">
         <label htmlFor="explorer-database" className="mb-1 block text-xs font-medium text-gray-600">데이터베이스</label>
         <select id="explorer-database" value={database} disabled={changingDatabase || databases.isPending}
@@ -258,7 +319,24 @@ export function ObjectSidebar({ connectionId, database, changingDatabase, readOn
         />
         {deleteError && <p role="alert" className="mt-2 text-xs text-red-600">삭제하지 못했습니다: {deleteError}</p>}
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto pb-2">
+      <div
+        role="tree"
+        aria-label="데이터베이스 객체"
+        className="min-h-0 flex-1 overflow-y-auto pb-2"
+        onKeyDown={(event) => {
+          if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+          event.preventDefault();
+          moveRowFocus(event.currentTarget, event.key);
+        }}
+        onClick={(event) => {
+          // WebKit leaves a clicked button unfocused, matching native macOS, so
+          // the arrow keys would otherwise still be driving the SQL editor.
+          const target = event.target as HTMLElement;
+          const row = target.closest<HTMLElement>("[data-tree-row]")
+            ?? target.parentElement?.querySelector<HTMLElement>("[data-tree-row]");
+          row?.focus();
+        }}
+      >
         {schemas.isLoading && <p className="px-3 text-xs text-gray-400">스키마 불러오는 중…</p>}
         {schemas.isError && (
           <p className="px-3 text-xs text-red-500">스키마를 불러오지 못했습니다</p>

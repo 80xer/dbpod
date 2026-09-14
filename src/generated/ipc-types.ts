@@ -133,7 +133,13 @@ export type TabGroupSnapshot = { id: string, tabIds: Array<string>, activeTabId:
 
 export type ConnectionSnapshot = { profileId: string, database: string | null, activeTabIndex: number | null, tabs: Array<TabSnapshot>, tabGroups: Array<TabGroupSnapshot>, };
 
-export type WorkspaceSnapshot = { version: number, connections: Array<ConnectionSnapshot>, };
+export type SavedQuery = { id: string, name: string, sql: string, updatedAt: string, };
+
+export type WorkspaceSnapshot = { version: number, connections: Array<ConnectionSnapshot>, 
+/**
+ * Named SQL snippets, deliberately global: not scoped to a profile or database.
+ */
+savedQueries: Array<SavedQuery>, };
 
 export type InsertCellDraft = { "mode": "value", value: DbValue, } | { "mode": "null" } | { "mode": "default" };
 

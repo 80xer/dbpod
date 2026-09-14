@@ -83,12 +83,18 @@ html[data-theme="dark"] textarea {
   color: #f3f4f6;
 }
 
-html[data-theme="dark"] [class*="bg-blue-50"] { background-color: #172554; }
-html[data-theme="dark"] [class*="bg-green-50"] { background-color: #052e16; }
-html[data-theme="dark"] [class*="bg-orange-50"] { background-color: #431407; }
-html[data-theme="dark"] [class*="bg-amber-50"] { background-color: #451a03; }
-html[data-theme="dark"] [class*="bg-red-50"] { background-color: #450a0a; }
+/* Match the class, never a substring of it: [class*="bg-blue-50"] also caught
+   hover:bg-blue-50 and painted it unconditionally, with no hover required. */
+html[data-theme="dark"] .bg-blue-50 { background-color: #172554; }
+html[data-theme="dark"] .hover\:bg-blue-50:hover { background-color: #172554; }
+html[data-theme="dark"] .bg-green-50 { background-color: #052e16; }
+html[data-theme="dark"] .bg-orange-50 { background-color: #431407; }
+html[data-theme="dark"] .bg-amber-50 { background-color: #451a03; }
+html[data-theme="dark"] .bg-red-50 { background-color: #450a0a; }
+html[data-theme="dark"] .hover\:bg-red-50:hover { background-color: #450a0a; }
 html[data-theme="dark"] .bg-blue-100 { background-color: #1e3a8a; }
+html[data-theme="dark"] .hover\:bg-blue-100:hover,
+html[data-theme="dark"] .focus\:bg-blue-100:focus { background-color: #1e3a8a; }
 html[data-theme="dark"] .bg-green-100 { background-color: #14532d; }
 html[data-theme="dark"] .bg-orange-100 { background-color: #7c2d12; }
 html[data-theme="dark"] .bg-amber-100 { background-color: #78350f; }

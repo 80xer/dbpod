@@ -252,7 +252,7 @@ fn atomic_write(dir: &Path, bytes: &[u8]) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::snapshot::{ConnectionSnapshot, TabSnapshot};
+    use crate::domain::snapshot::{ConnectionSnapshot, SavedQuery, TabSnapshot};
 
     const TEST_KEY: [u8; 32] = [42; 32];
     const SQL: &str = "SELECT 'private draft 한글'";
@@ -261,6 +261,12 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("dbpod-snapshot-{}", uuid::Uuid::new_v4()));
         let snapshot = WorkspaceSnapshot {
             version: 1,
+            saved_queries: vec![SavedQuery {
+                id: "saved-one".into(),
+                name: "Saved draft".into(),
+                sql: SQL.into(),
+                updated_at: "2026-01-01T00:00:00.000Z".into(),
+            }],
             connections: vec![ConnectionSnapshot {
                 profile_id: "profile-one".into(),
                 database: None,
