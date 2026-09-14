@@ -548,8 +548,10 @@ it("saves the active query by shortcut: names it once, then overwrites it silent
     dialog.close();
   });
   await waitFor(() => expect(savedQueryStore.find("일일 리포트")?.sql).toBe("SELECT 'first'"));
-  // The tab takes the name it was saved under.
+  // The tab takes the name it was saved under, and the toast clears itself.
   await screen.findByRole("tab", { name: "일일 리포트" });
+  expect(screen.getByRole("status").textContent).toContain("일일 리포트");
+  await waitFor(() => expect(screen.queryByRole("status")).toBeNull(), { timeout: 3000 });
 
   // A tab already bound to a saved query overwrites it without asking again.
   fireEvent.change(editor(), { target: { value: "SELECT 'second'" } });

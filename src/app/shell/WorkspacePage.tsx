@@ -76,6 +76,8 @@ function WorkspaceContent({ connectionId }: { connectionId: string }) {
   }, [state.tabs.length, dispatch]);
 
   const [notice, setNotice] = useState("");
+  // Kept apart from `notice`: a confirmation is worth a glance, an error stays put.
+  const [toast, setToast] = useState<{ text: string; at: number } | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [sidebarWidth, setSidebarWidth] = useState(224);
   const sidebarResizeStart = useRef<{ pointerId: number; x: number; width: number } | null>(null);
@@ -125,7 +127,7 @@ function WorkspaceContent({ connectionId }: { connectionId: string }) {
       const saved = await savedQueryStore.save(name, sql);
       savedQueryIds.set(tab.id, saved.id);
       dispatch({ type: "TAB_RENAMED", tabId: tab.id, title: saved.name });
-      setNotice(`'${saved.name}' 저장됨`);
+      setToast({ text: `'${saved.name}' 저장됨`, at: Date.now() });
     } catch (error) {
       setNotice(`저장하지 못했습니다: ${(error as { message?: string }).message ?? String(error)}`);
     }
@@ -138,6 +140,13 @@ function WorkspaceContent({ connectionId }: { connectionId: string }) {
   useEffect(() => {
     if (!profile) void navigate({ to: "/" });
   }, [profile, navigate]);
+
+  // Re-saving raises a new object, so an unchanged message still restarts the timer.
+  useEffect(() => {
+    if (!toast) return;
+    const timer = setTimeout(() => setToast(null), 2000);
+    return () => clearTimeout(timer);
+  }, [toast]);
 
   // Capture workspace navigation before CodeMirror handles the same key.
   useEffect(() => {
@@ -474,6 +483,11 @@ function WorkspaceContent({ connectionId }: { connectionId: string }) {
         </>}
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       {notice && <div role="alert" className="bg-amber-50 px-3 py-1 text-xs text-amber-800">{notice}</div>}
+      {toast && (
+        <div role="status" className="pointer-events-none fixed bottom-6 left-1/2 z-50 -translate-x-1/2 rounded-full bg-gray-900/90 px-4 py-2 text-xs text-white shadow-lg">
+          {toast.text}
+        </div>
+      )}
       <div className="flex min-h-0 min-w-0 flex-1 divide-x divide-gray-300">
         {groups.map((group, groupIndex) => {
           const tab = state.tabs.find((t) => t.id === group.activeTabId);
