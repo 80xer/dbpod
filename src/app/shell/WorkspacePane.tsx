@@ -125,8 +125,11 @@ export function WorkspacePane({ connectionId, database, tab, readOnly, dispatch,
                   </button>
                   <button
                     type="button"
-                    aria-label={`${r.title} 고정`}
-                    title={r.isPinned ? "고정 해제" : "고정 (기본 실행이 덮어쓰지 않음)"}
+                    aria-label={`${r.title} ${r.isPinned ? "고정 해제" : "고정"}`}
+                    aria-pressed={r.isPinned}
+                    title={r.isPinned
+                      ? "고정 해제 — 실행이 이 결과를 덮어씁니다"
+                      : "고정 — 실행해도 이 결과를 남기고 새 Result 탭에 표시합니다"}
                     onClick={() =>
                       dispatch({
                         type: "RESULT_PIN_TOGGLED",
@@ -134,7 +137,11 @@ export function WorkspacePane({ connectionId, database, tab, readOnly, dispatch,
                         resultTabId: r.id,
                       })
                     }
-                    className={r.isPinned ? "text-blue-600" : "text-gray-300 hover:text-gray-500"}
+                    // A colour emoji paints itself, so text colour says nothing
+                    // about the state; grayscale and opacity are what show here.
+                    className={`rounded px-0.5 ${r.isPinned
+                      ? "bg-blue-100 opacity-100"
+                      : "opacity-30 grayscale hover:opacity-70"}`}
                   >
                     📌
                   </button>

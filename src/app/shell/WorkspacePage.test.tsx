@@ -560,3 +560,24 @@ it("saves the active query by shortcut: names it once, then overwrites it silent
   expect(document.querySelector("dialog")).toBeNull();
   expect(savedQueryStore.list()).toHaveLength(1);
 });
+
+it("shows whether a result is pinned, and a pinned result survives the next run", async () => {
+  await mountWorkspace();
+  await act(async () => { fireEvent.click(runButton()); });
+  const first = workspaceStates.get("A")!.tabs[0].resultTabs[0];
+
+  const pin = screen.getByRole("button", { name: `${first.title} 고정` });
+  expect(pin.getAttribute("aria-pressed")).toBe("false");
+  // A colour emoji ignores text colour, so the state has to show some other way.
+  expect(pin.className).toContain("grayscale");
+  fireEvent.click(pin);
+  const unpin = await screen.findByRole("button", { name: `${first.title} 고정 해제` });
+  expect(unpin.getAttribute("aria-pressed")).toBe("true");
+  expect(unpin.className).not.toContain("grayscale");
+
+  // The default run now opens a second result instead of replacing the pinned one.
+  await act(async () => { fireEvent.click(runButton()); });
+  const results = workspaceStates.get("A")!.tabs[0].resultTabs;
+  expect(results).toHaveLength(2);
+  expect(results[0].id).toBe(first.id);
+});
