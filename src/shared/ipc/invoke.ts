@@ -20,6 +20,7 @@ import type {
   MetadataDropObjectRequest,
   MetadataListObjectsRequest,
   MetadataListSchemasRequest,
+  AiChatApproveRequest,
   AiChatCancelRequest,
   QueryAckChunkRequest,
   QueryCancelRequest,
@@ -44,6 +45,7 @@ import type {
 export const ipc = {
   aiChat: (request: AiChatRequest, onEvent: Channel<AiChatEvent>) => invoke<string>("ai_chat", { request, onEvent }),
   aiChatCancel: (request: AiChatCancelRequest) => invoke<boolean>("ai_chat_cancel", { request }),
+  aiChatApprove: (request: AiChatApproveRequest) => invoke<boolean>("ai_chat_approve", { request }),
   vaultStatus: () => invoke<VaultStatus>("vault_status"),
   profileList: () => invoke<ConnectionProfile[]>("connection_profile_list"),
   profileReorder: (profileIds: string[]) =>

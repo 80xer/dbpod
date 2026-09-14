@@ -31,8 +31,12 @@ pub struct AiChatRequest {
 #[serde(rename_all = "camelCase")]
 pub struct AiChatCancelRequest { pub request_id: String }
 #[derive(Debug, Clone, Serialize, TS)]
-#[serde(rename_all = "camelCase", tag = "type")]
-pub enum AiChatEvent { Chunk { text: String }, Progress { text: String }, Session { id: String }, Completed, Failed { message: String } }
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase", tag = "type")]
+pub enum AiChatEvent { Chunk { text: String }, Progress { text: String }, Session { id: String }, Approval { #[ts(type = "number")] approval_id: i64, message: String, detail: Option<String> }, Completed, Failed { message: String } }
+
+#[derive(Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct AiChatApproveRequest { pub request_id: String, #[ts(type = "number")] pub approval_id: i64, pub approved: bool }
 
 /// Read-only tools the AI panel may use. `claude -p` is non-interactive, so
 /// nobody is there to answer a permission prompt and anything not listed here
@@ -136,6 +140,25 @@ pub async fn ai_chat_cancel(
     Ok(true)
 }
 
+/// Answers one approval request from the agent waiting on the other end.
+#[tauri::command]
+pub async fn ai_chat_approve(
+    state: State<'_, AppState>,
+    request: AiChatApproveRequest,
+) -> Result<bool, AppError> {
+    let jobs = state
+        .ai_chat_jobs
+        .lock()
+        .map_err(|_| AppError::internal("AI 승인 상태를 확인할 수 없습니다"))?;
+    let Some(approvals) = jobs.get(&request.request_id).and_then(|job| job.approvals.as_ref()) else {
+        return Ok(false);
+    };
+    let action = if request.approved { "accept" } else { "decline" };
+    Ok(approvals
+        .send(serde_json::json!({"id": request.approval_id, "result": {"action": action}}))
+        .is_ok())
+}
+
 async fn command_execute_with_cancel(
     state: State<'_, AppState>,
     request_id: String,
@@ -161,7 +184,7 @@ async fn command_execute_with_cancel(
         .ai_chat_jobs
         .lock()
         .map_err(|_| AppError::internal("AI 취소 상태를 확인할 수 없습니다"))?
-        .insert(request_id.clone(), crate::state::AiChatJob { pid, canceled: false });
+        .insert(request_id.clone(), crate::state::AiChatJob { pid, canceled: false, approvals: None });
     while let Some(line) = lines.next_line().await.map_err(|e| AppError::new("AI_FAILED", e.to_string()))? {
         if state
             .ai_chat_jobs
@@ -216,11 +239,12 @@ async fn run_codex_app_server(
     let mut input = child.stdin.take().ok_or_else(|| AppError::internal("Codex stdin unavailable"))?;
     let stdout = child.stdout.take().ok_or_else(|| AppError::internal("Codex stdout unavailable"))?;
     let mut lines = BufReader::new(stdout).lines();
+    let (approval_tx, mut approval_rx) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
     state
         .ai_chat_jobs
         .lock()
         .map_err(|_| AppError::internal("AI 취소 상태를 확인할 수 없습니다"))?
-        .insert(request_id.clone(), crate::state::AiChatJob { pid, canceled: false });
+        .insert(request_id.clone(), crate::state::AiChatJob { pid, canceled: false, approvals: Some(approval_tx) });
     async fn send(input: &mut tokio::process::ChildStdin, value: serde_json::Value) -> Result<(), AppError> {
         use tokio::io::AsyncWriteExt;
         input.write_all(format!("{}\n", value).as_bytes()).await.map_err(|e| AppError::new("AI_FAILED", e.to_string()))?;
@@ -237,8 +261,8 @@ async fn run_codex_app_server(
     // Codex keeps the conversation in its own thread, so a follow-up resumes the
     // thread instead of restating what was already said.
     let start = match &request.session_id {
-        Some(existing) => serde_json::json!({"id":2,"method":"thread/resume","params":{"threadId":existing,"cwd":".","approvalPolicy":"never","sandbox":"read-only"}}),
-        None => serde_json::json!({"id":2,"method":"thread/start","params":{"model":model,"cwd":".","approvalPolicy":"never","sandbox":"read-only"}}),
+        Some(existing) => serde_json::json!({"id":2,"method":"thread/resume","params":{"threadId":existing,"cwd":".","approvalPolicy":"on-request","sandbox":"read-only"}}),
+        None => serde_json::json!({"id":2,"method":"thread/start","params":{"model":model,"cwd":".","approvalPolicy":"on-request","sandbox":"read-only"}}),
     };
     send(&mut input, start).await?;
     let mut thread_id = None;
@@ -258,7 +282,19 @@ async fn run_codex_app_server(
     let _ = on_event.send(AiChatEvent::Session { id: thread_id.clone() });
     let reasoning = if request.thinking == "auto" { serde_json::Value::Null } else { serde_json::Value::String(request.thinking.clone()) };
     send(&mut input, serde_json::json!({"id":3,"method":"turn/start","params":{"threadId":thread_id,"input":[{"type":"text","text":request.prompt}],"reasoningEffort":reasoning}})).await?;
-    while let Some(line) = lines.next_line().await.map_err(|e| AppError::new("AI_FAILED", e.to_string()))? {
+    loop {
+        // The turn blocks on an approval, so answers have to reach stdin while
+        // the same task is still reading stdout.
+        let line = tokio::select! {
+            answer = approval_rx.recv() => match answer {
+                Some(answer) => { send(&mut input, answer).await?; continue; }
+                None => continue,
+            },
+            read = lines.next_line() => match read.map_err(|e| AppError::new("AI_FAILED", e.to_string()))? {
+                Some(read) => read,
+                None => break,
+            },
+        };
         if state
             .ai_chat_jobs
             .lock()
@@ -281,6 +317,22 @@ async fn run_codex_app_server(
             Some("turn/completed") | Some("turn/failed") => break,
             Some("item/started") => {
                 let _ = on_event.send(AiChatEvent::Progress { text: "Codex 작업 중…".into() });
+            }
+            Some("mcpServer/elicitation/request") => {
+                if let Some(approval_id) = value.get("id").and_then(|id| id.as_i64()) {
+                    let _ = on_event.send(AiChatEvent::Approval {
+                        approval_id,
+                        message: value
+                            .pointer("/params/message")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("도구 실행을 허용할까요?")
+                            .to_string(),
+                        detail: value
+                            .pointer("/params/_meta/tool_description")
+                            .and_then(|v| v.as_str())
+                            .map(str::to_owned),
+                    });
+                }
             }
             _ => {}
         }

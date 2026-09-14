@@ -40,7 +40,9 @@ sessionId: string | null, };
 
 export type AiChatCancelRequest = { requestId: string, };
 
-export type AiChatEvent = { "type": "chunk", text: string, } | { "type": "progress", text: string, } | { "type": "session", id: string, } | { "type": "completed" } | { "type": "failed", message: string, };
+export type AiChatApproveRequest = { requestId: string, approvalId: number, approved: boolean, };
+
+export type AiChatEvent = { "type": "chunk", text: string, } | { "type": "progress", text: string, } | { "type": "session", id: string, } | { "type": "approval", approvalId: number, message: string, detail: string | null, } | { "type": "completed" } | { "type": "failed", message: string, };
 
 export type TemporalType = "date" | "time" | "timetz" | "timestamp" | "timestamptz" | "interval";
 

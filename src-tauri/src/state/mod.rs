@@ -23,6 +23,9 @@ pub struct Workspace {
 pub struct AiChatJob {
     pub pid: i32,
     pub canceled: bool,
+    /// Answers to the agent's approval requests, written back into its stdin.
+    /// Only Codex asks; the Claude CLI settles permission from its allowlist.
+    pub approvals: Option<tokio::sync::mpsc::UnboundedSender<serde_json::Value>>,
 }
 
 pub struct AppState {

@@ -13,6 +13,7 @@ import { ipc } from "../../shared/ipc/invoke";
 hljs.registerLanguage("sql", sqlLanguage);
 
 type Message = { role: "user" | "assistant"; text: string; at: number };
+type Approval = { approvalId: number; message: string; detail: string | null };
 const formatTime = (at: number) => new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(at);
 const highlightCode = (code: string, className: string) => {
   const language = className.replace(/^language-/, "");
@@ -60,6 +61,8 @@ export function AIChatPanel({ onClose, width, visible = true }: { onClose: () =>
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState<number | null>(null);
   const [progress, setProgress] = useState("");
+  // Codex blocks its turn until each of these is answered.
+  const [approvals, setApprovals] = useState<Approval[]>([]);
   const [requestId, setRequestId] = useState<string | null>(null);
   // The CLI owns the transcript; this is only the handle used to resume it.
   const sessionId = useRef<string | null>(null);
@@ -89,6 +92,7 @@ export function AIChatPanel({ onClose, width, visible = true }: { onClose: () =>
     setMessages((current) => [...current, { role: "user", text, at: Date.now() }]);
     setBusy(true);
     setProgress("시작 중…");
+    setApprovals([]);
     const runningRequestId = nextRequestId();
     setRequestId(runningRequestId);
 
@@ -96,6 +100,7 @@ export function AIChatPanel({ onClose, width, visible = true }: { onClose: () =>
     const channel = new Channel<AiChatEvent>();
     channel.onmessage = (event) => {
       if (event.type === "session" && event.id) sessionId.current = event.id;
+      if (event.type === "approval") setApprovals((current) => [...current, { approvalId: event.approvalId, message: event.message, detail: event.detail }]);
       if (event.type === "progress" && event.text) setProgress(event.text);
       if (event.type === "chunk" && event.text) {
         response += event.text;
@@ -122,6 +127,18 @@ export function AIChatPanel({ onClose, width, visible = true }: { onClose: () =>
       setBusy(false);
       setProgress("");
       setRequestId(null);
+      setApprovals([]);
+    }
+  };
+
+  const answerApproval = async (approval: Approval, approved: boolean) => {
+    const runningId = requestId;
+    setApprovals((current) => current.filter((item) => item.approvalId !== approval.approvalId));
+    if (!runningId) return;
+    try {
+      await ipc.aiChatApprove({ requestId: runningId, approvalId: approval.approvalId, approved });
+    } catch {
+      // The turn is already finished or cancelled; nothing is left to answer.
     }
   };
 
@@ -147,7 +164,17 @@ export function AIChatPanel({ onClose, width, visible = true }: { onClose: () =>
     <div ref={messagesRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
       {messages.length === 0 && <p className="text-xs text-gray-400">명령을 입력하면 선택한 CLI에 그대로 전달합니다.</p>}
       {messages.map((message, index) => <MessageBubble key={index} message={message} copied={copied === index} onCopied={() => { setCopied(index); window.setTimeout(() => setCopied((current) => current === index ? null : current), 1200); }} />)}
-      {busy && <p className="text-xs text-gray-400">{progress || "응답 중…"}</p>}
+      {approvals.map((approval) => (
+        <div key={approval.approvalId} role="alertdialog" aria-label="도구 실행 승인" className="rounded-xl border border-amber-300 bg-amber-50 p-2 text-xs">
+          <p className="font-medium text-amber-900">{approval.message}</p>
+          {approval.detail && <p className="mt-1 text-amber-800">{approval.detail}</p>}
+          <div className="mt-2 flex gap-2">
+            <button type="button" onClick={() => void answerApproval(approval, true)} className="rounded bg-amber-600 px-2 py-1 text-white hover:bg-amber-700">허용</button>
+            <button type="button" onClick={() => void answerApproval(approval, false)} className="rounded border border-amber-400 px-2 py-1 text-amber-900 hover:bg-amber-100">거부</button>
+          </div>
+        </div>
+      ))}
+      {busy && approvals.length === 0 && <p className="text-xs text-gray-400">{progress || "응답 중…"}</p>}
     </div>
       <div className="shrink-0 border-t-2 border-gray-200 p-2">
         <div className="rounded border border-gray-300 bg-white focus-within:border-blue-500 focus-within:ring-1 focus-within:ring-blue-500">

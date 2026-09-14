@@ -45,6 +45,7 @@ pub fn run() {
             commands::vault_status,
             commands::ai_chat,
             commands::ai_chat_cancel,
+            commands::ai_chat_approve,
             commands::connection_profile_list,
             commands::connection_profile_reorder,
             commands::connection_profile_save,

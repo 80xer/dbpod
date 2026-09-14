@@ -2,7 +2,7 @@
 //! Run: `cargo test --test export_bindings`
 //! CI treats an uncommitted diff of the generated file as a failure.
 
-use dbpod_lib::commands::{AiChatCancelRequest, AiChatEvent, AiChatRequest};
+use dbpod_lib::commands::{AiChatApproveRequest, AiChatCancelRequest, AiChatEvent, AiChatRequest};
 use dbpod_lib::domain::db_value::*;
 use dbpod_lib::domain::editing::*;
 use dbpod_lib::domain::events::*;
@@ -42,6 +42,7 @@ fn export_ipc_types() {
     decl!(VaultStatus);
     decl!(AiChatRequest);
     decl!(AiChatCancelRequest);
+    decl!(AiChatApproveRequest);
     decl!(AiChatEvent);
     decl!(TemporalType);
     decl!(JsonType);
