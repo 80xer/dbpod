@@ -31,11 +31,16 @@ export type ConnectionCloseRequest = { connectionId: string, };
 
 export type VaultStatus = { state: string, secureStorageAvailable: boolean, };
 
-export type AiChatRequest = { provider: string, model: string, thinking: string, prompt: string, requestId: string | null, };
+export type AiChatRequest = { provider: string, model: string, thinking: string, prompt: string, requestId: string | null, 
+/**
+ * The conversation this turn belongs to. None starts a new one; the id of
+ * the conversation that began comes back as an AiChatEvent::Session.
+ */
+sessionId: string | null, };
 
 export type AiChatCancelRequest = { requestId: string, };
 
-export type AiChatEvent = { "type": "chunk", text: string, } | { "type": "progress", text: string, } | { "type": "completed" } | { "type": "failed", message: string, };
+export type AiChatEvent = { "type": "chunk", text: string, } | { "type": "progress", text: string, } | { "type": "session", id: string, } | { "type": "completed" } | { "type": "failed", message: string, };
 
 export type TemporalType = "date" | "time" | "timetz" | "timestamp" | "timestamptz" | "interval";
 

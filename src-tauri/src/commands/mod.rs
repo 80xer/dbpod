@@ -22,13 +22,17 @@ pub struct AiChatRequest {
     pub thinking: String,
     pub prompt: String,
     pub request_id: Option<String>,
+    /// The conversation this turn belongs to. None starts a new one; the id of
+    /// the conversation that began comes back as an AiChatEvent::Session.
+    #[serde(default)]
+    pub session_id: Option<String>,
 }
 #[derive(Debug, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct AiChatCancelRequest { pub request_id: String }
 #[derive(Debug, Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase", tag = "type")]
-pub enum AiChatEvent { Chunk { text: String }, Progress { text: String }, Completed, Failed { message: String } }
+pub enum AiChatEvent { Chunk { text: String }, Progress { text: String }, Session { id: String }, Completed, Failed { message: String } }
 
 /// Read-only tools the AI panel may use. `claude -p` is non-interactive, so
 /// nobody is there to answer a permission prompt and anything not listed here
@@ -79,6 +83,21 @@ pub async fn ai_chat(
         "--model",
         &request.model,
     ]);
+    // Context carries in the CLI's own session rather than by replaying earlier
+    // messages into the prompt: the CLI keeps the full history, its tool calls
+    // and its prompt cache, none of which survive a re-stated transcript.
+    let session_id = match &request.session_id {
+        Some(existing) => {
+            command.args(["--resume", existing]);
+            existing.clone()
+        }
+        None => {
+            let fresh = uuid::Uuid::new_v4().to_string();
+            command.args(["--session-id", &fresh]);
+            fresh
+        }
+    };
+    let _ = on_event.send(AiChatEvent::Session { id: session_id });
     command.arg("--allowedTools").args(AI_ALLOWED_TOOLS);
     if request.thinking != "auto" {
         command.args(["--effort", &request.thinking]);
@@ -215,17 +234,28 @@ async fn run_codex_app_server(
         }
     }
     let model = if request.model == "default" { serde_json::Value::Null } else { serde_json::Value::String(request.model.clone()) };
-    send(&mut input, serde_json::json!({"id":2,"method":"thread/start","params":{"model":model,"cwd":".","approvalPolicy":"never","sandbox":"read-only"}})).await?;
+    // Codex keeps the conversation in its own thread, so a follow-up resumes the
+    // thread instead of restating what was already said.
+    let start = match &request.session_id {
+        Some(existing) => serde_json::json!({"id":2,"method":"thread/resume","params":{"threadId":existing,"cwd":".","approvalPolicy":"never","sandbox":"read-only"}}),
+        None => serde_json::json!({"id":2,"method":"thread/start","params":{"model":model,"cwd":".","approvalPolicy":"never","sandbox":"read-only"}}),
+    };
+    send(&mut input, start).await?;
     let mut thread_id = None;
     while let Some(line) = lines.next_line().await.map_err(|e| AppError::new("AI_FAILED", e.to_string()))? {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
             if v.get("id").and_then(|id| id.as_i64()) == Some(2) {
-                thread_id = v.pointer("/result/thread/id").and_then(|id| id.as_str()).map(str::to_owned);
+                if let Some(message) = v.pointer("/error/message").and_then(|m| m.as_str()) {
+                    return Err(AppError::new("AI_FAILED", format!("Codex 대화를 이어가지 못했습니다: {message}")));
+                }
+                thread_id = v.pointer("/result/thread/id").and_then(|id| id.as_str()).map(str::to_owned)
+                    .or_else(|| request.session_id.clone());
                 break;
             }
         }
     }
     let thread_id = thread_id.ok_or_else(|| AppError::new("AI_FAILED", "Codex thread를 시작하지 못했습니다"))?;
+    let _ = on_event.send(AiChatEvent::Session { id: thread_id.clone() });
     let reasoning = if request.thinking == "auto" { serde_json::Value::Null } else { serde_json::Value::String(request.thinking.clone()) };
     send(&mut input, serde_json::json!({"id":3,"method":"turn/start","params":{"threadId":thread_id,"input":[{"type":"text","text":request.prompt}],"reasoningEffort":reasoning}})).await?;
     while let Some(line) = lines.next_line().await.map_err(|e| AppError::new("AI_FAILED", e.to_string()))? {
@@ -264,7 +294,12 @@ async fn run_codex_app_server(
         return Ok(());
     }
     let _ = on_event.send(AiChatEvent::Completed);
-    let _ = child.kill().await;
+    // Closing stdin lets app-server exit on its own and release the thread's
+    // writer lock; killing it strands the lock and the next turn cannot resume.
+    drop(input);
+    if tokio::time::timeout(std::time::Duration::from_secs(10), child.wait()).await.is_err() {
+        let _ = child.kill().await;
+    }
     Ok(())
 }
 

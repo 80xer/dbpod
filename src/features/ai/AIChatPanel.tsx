@@ -61,6 +61,8 @@ export function AIChatPanel({ onClose, width, visible = true }: { onClose: () =>
   const [copied, setCopied] = useState<number | null>(null);
   const [progress, setProgress] = useState("");
   const [requestId, setRequestId] = useState<string | null>(null);
+  // The CLI owns the transcript; this is only the handle used to resume it.
+  const sessionId = useRef<string | null>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
 
   const nextRequestId = () => {
@@ -72,6 +74,12 @@ export function AIChatPanel({ onClose, width, visible = true }: { onClose: () =>
     const element = messagesRef.current;
     if (element) element.scrollTop = element.scrollHeight;
   }, [messages, busy, prompt]);
+
+  const newConversation = () => {
+    if (busy) return;
+    sessionId.current = null;
+    setMessages([]);
+  };
 
   const send = async () => {
     const text = prompt.trim();
@@ -87,6 +95,7 @@ export function AIChatPanel({ onClose, width, visible = true }: { onClose: () =>
     let response = "";
     const channel = new Channel<AiChatEvent>();
     channel.onmessage = (event) => {
+      if (event.type === "session" && event.id) sessionId.current = event.id;
       if (event.type === "progress" && event.text) setProgress(event.text);
       if (event.type === "chunk" && event.text) {
         response += event.text;
@@ -106,7 +115,7 @@ export function AIChatPanel({ onClose, width, visible = true }: { onClose: () =>
     };
 
     try {
-      await ipc.aiChat({ provider, model, thinking, prompt: text, requestId: runningRequestId }, channel);
+      await ipc.aiChat({ provider, model, thinking, prompt: text, requestId: runningRequestId, sessionId: sessionId.current }, channel);
     } catch (error) {
       setMessages((current) => [...current, { role: "assistant", text: `오류: ${(error as Error).message ?? String(error)}`, at: Date.now() }]);
     } finally {
@@ -130,7 +139,10 @@ export function AIChatPanel({ onClose, width, visible = true }: { onClose: () =>
   return <aside hidden={!visible} style={{ width }} className="flex shrink-0 flex-col border-l border-gray-200 bg-white" aria-label="AI 채팅 패널">
     <div className="flex shrink-0 items-center justify-between border-b border-gray-200 px-3 py-2">
       <strong className="text-sm">AI Chat</strong>
-      <button type="button" onClick={onClose} aria-label="AI 채팅 닫기" className="rounded px-2 py-1 text-gray-500 hover:bg-gray-100">×</button>
+      <div className="flex items-center gap-1">
+        <button type="button" onClick={newConversation} disabled={busy || messages.length === 0} aria-label="새 대화" title="새 대화 — 지금까지의 맥락을 잊습니다" className="rounded px-2 py-1 text-xs text-gray-500 hover:bg-gray-100 disabled:opacity-40">새 대화</button>
+        <button type="button" onClick={onClose} aria-label="AI 채팅 닫기" className="rounded px-2 py-1 text-gray-500 hover:bg-gray-100">×</button>
+      </div>
     </div>
     <div ref={messagesRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
       {messages.length === 0 && <p className="text-xs text-gray-400">명령을 입력하면 선택한 CLI에 그대로 전달합니다.</p>}
@@ -143,6 +155,8 @@ export function AIChatPanel({ onClose, width, visible = true }: { onClose: () =>
           <div className="flex items-center gap-1 px-2 pb-2">
             <select aria-label="AI 프로바이더" value={provider} onChange={(e) => {
               const next = e.target.value as AiProvider;
+              // A session handle belongs to the CLI that issued it.
+              if (next !== provider) sessionId.current = null;
               setProvider(next);
               setModel(aiModels[next][0]);
             }} className="min-w-0 rounded border border-gray-300 px-1 py-1 text-xs">
