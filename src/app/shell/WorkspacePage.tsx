@@ -8,9 +8,11 @@ import { environmentStyles } from "../../entities/connection/environmentStyles";
 import { editStore } from "../../entities/result/editStore";
 import { resultStore } from "../../entities/result/resultStore";
 import { restoreWorkspace, saveWorkspaceNow, saveWorkspaceSoon } from "../../entities/workspace/persistence";
+import { savedQueryStore } from "../../entities/query/savedQueryStore";
 import {
   emptyWorkspace,
   getTabGroups,
+  savedQueryIds,
   sqlDrafts,
   dispatchWorkspace,
   subscribeWorkspace,
@@ -82,6 +84,7 @@ function WorkspaceContent({ connectionId }: { connectionId: string }) {
   const editorViews = useRef(new Map<string, EditorView>());
   const focusEditor = useRef<string | null>(null);
   const closeActiveTabRef = useRef<() => void>(() => undefined);
+  const saveCurrentQueryRef = useRef<() => Promise<void>>(async () => undefined);
 
   const activeTab = state.tabs.find((t) => t.id === state.activeTabId);
   const running = Boolean(activeTab?.runningExecutionId);
@@ -94,11 +97,40 @@ function WorkspaceContent({ connectionId }: { connectionId: string }) {
       view.focus();
     }
   }, [connectionId, dispatch]);
-  const openSqlInNewTab = useCallback((sql: string, title?: string) => {
+  const openSqlInNewTab = useCallback((sql: string, title?: string, savedQueryId?: string) => {
     const tabId = crypto.randomUUID();
     sqlDrafts.set(tabId, sql);
+    if (savedQueryId) savedQueryIds.set(tabId, savedQueryId);
     dispatch({ type: "TAB_ADDED", tabId, title });
   }, [dispatch]);
+
+  /** A tab already bound to a saved query overwrites it; anything else is named first. */
+  const saveCurrentQuery = useCallback(async () => {
+    const tab = workspaceStates.get(connectionId)?.tabs.find((t) => t.id === workspaceStates.get(connectionId)?.activeTabId);
+    if (!tab || tab.kind !== "query") return;
+    const sql = sqlDrafts.get(tab.id) ?? "";
+    if (!sql.trim()) {
+      setNotice("저장할 SQL이 없습니다.");
+      return;
+    }
+    const bound = savedQueryStore.list().find((entry) => entry.id === savedQueryIds.get(tab.id));
+    let name = bound?.name;
+    if (!name) {
+      name = (await promptText("저장할 이름", tab.title))?.trim();
+      if (!name) return;
+      const clash = savedQueryStore.find(name);
+      if (clash && !window.confirm(`"${clash.name}"을(를) 덮어쓸까요?`)) return;
+    }
+    try {
+      const saved = await savedQueryStore.save(name, sql);
+      savedQueryIds.set(tab.id, saved.id);
+      dispatch({ type: "TAB_RENAMED", tabId: tab.id, title: saved.name });
+      setNotice(`'${saved.name}' 저장됨`);
+    } catch (error) {
+      setNotice(`저장하지 못했습니다: ${(error as { message?: string }).message ?? String(error)}`);
+    }
+  }, [connectionId, dispatch]);
+  saveCurrentQueryRef.current = saveCurrentQuery;
   const addQueryTab = useCallback((split = false, groupId?: string) => {
     dispatchAndFocusEditor({ type: "TAB_ADDED", tabId: crypto.randomUUID(), split, groupId });
   }, [dispatchAndFocusEditor]);
@@ -124,6 +156,12 @@ function WorkspaceContent({ connectionId }: { connectionId: string }) {
         e.preventDefault();
         e.stopPropagation();
         if (!e.repeat) closeActiveTabRef.current();
+        return;
+      }
+      if (matches("saveQuery")) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (!e.repeat) void saveCurrentQueryRef.current();
         return;
       }
       if (matches("previousPanel")) action = { type: "PANEL_CYCLED", direction: -1 };
@@ -519,10 +557,10 @@ function WorkspaceContent({ connectionId }: { connectionId: string }) {
         )}
         {sidePanel === "saved" && (
           <SavedQueriesPanel
-            currentSql={(activeTab && sqlDrafts.get(activeTab.id)) ?? ""}
-            currentTitle={activeTab?.title ?? ""}
+            onSaveCurrent={() => void saveCurrentQuery()}
+            saveShortcut={displayShortcut(shortcuts.saveQuery)}
             onClose={() => setSidePanel(null)}
-            onOpen={(name, sql) => openSqlInNewTab(sql, name)}
+            onOpen={(entry) => openSqlInNewTab(entry.sql, entry.name, entry.id)}
           />
         )}
       </div>

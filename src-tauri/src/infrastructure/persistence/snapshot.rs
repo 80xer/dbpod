@@ -276,6 +276,7 @@ mod tests {
                     title: "Draft".into(),
                     sql: SQL.into(),
                     id: None,
+                    saved_query_id: None,
                 }],
             }],
         };

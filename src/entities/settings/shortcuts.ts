@@ -5,6 +5,7 @@ export const shortcutDefinitions = [
   { id: "cancelQueryAlternate", label: "실행 취소 (보조)", defaultValue: "Mod+Period" },
   { id: "splitPanel", label: "패널 분할", defaultValue: "Mod+KeyD" },
   { id: "closeTab", label: "현재 탭 닫기", defaultValue: "Mod+KeyW" },
+  { id: "saveQuery", label: "현재 쿼리 저장", defaultValue: "Mod+KeyS" },
   { id: "previousPanel", label: "이전 패널", defaultValue: "Mod+Shift+ArrowLeft" },
   { id: "nextPanel", label: "다음 패널", defaultValue: "Mod+Shift+ArrowRight" },
   { id: "previousTab", label: "이전 탭", defaultValue: "Ctrl+Shift+Tab" },

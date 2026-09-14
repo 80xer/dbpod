@@ -5,6 +5,7 @@ import { savedQueryStore } from "../query/savedQueryStore";
 import {
   getTabGroups,
   type QueryTabGroup,
+  savedQueryIds,
   sqlDrafts,
   workspaceStates,
   type WorkspaceState,
@@ -49,6 +50,7 @@ export function restoreWorkspace(profileId: string, database: string): Workspace
   const tabs = conn.tabs.map((t, index) => {
     const id = restoredIds[index];
     sqlDrafts.set(id, t.sql);
+    if (t.savedQueryId) savedQueryIds.set(id, t.savedQueryId);
     return {
       id,
       title: t.title,
@@ -116,6 +118,7 @@ function buildSnapshot(): WorkspaceSnapshot {
         title: t.title,
         sql: sqlDrafts.get(t.id) ?? "",
         id: t.id,
+        savedQueryId: savedQueryIds.get(t.id) ?? null,
       })),
     });
   }

@@ -1,15 +1,17 @@
 import { useState } from "react";
 import { savedQueryStore, useSavedQueries } from "../../entities/query/savedQueryStore";
+import type { SavedQuery } from "../../generated/ipc-types";
 import { promptText } from "../../shared/ui/prompt";
 
 type Props = {
-  currentSql: string;
-  currentTitle: string;
-  onOpen: (name: string, sql: string) => void;
+  /** Saving lives in the workspace, which owns the tab the query belongs to. */
+  onSaveCurrent: () => void;
+  saveShortcut: string;
+  onOpen: (entry: SavedQuery) => void;
   onClose: () => void;
 };
 
-export function SavedQueriesPanel({ currentSql, currentTitle, onOpen, onClose }: Props) {
+export function SavedQueriesPanel({ onSaveCurrent, saveShortcut, onOpen, onClose }: Props) {
   const all = useSavedQueries();
   const [filter, setFilter] = useState("");
   const [error, setError] = useState("");
@@ -21,18 +23,6 @@ export function SavedQueriesPanel({ currentSql, currentTitle, onOpen, onClose }:
   const attempt = (run: () => Promise<unknown>) => {
     setError("");
     void run().catch((e: unknown) => setError((e as { message?: string }).message ?? String(e)));
-  };
-
-  const saveCurrent = async () => {
-    if (!currentSql.trim()) {
-      setError("저장할 SQL이 없습니다");
-      return;
-    }
-    const name = (await promptText("저장할 이름", currentTitle))?.trim();
-    if (!name) return;
-    const existing = savedQueryStore.find(name);
-    if (existing && !window.confirm(`"${existing.name}"을(를) 덮어쓸까요?`)) return;
-    attempt(() => savedQueryStore.save(name, currentSql));
   };
 
   return (
@@ -51,10 +41,11 @@ export function SavedQueriesPanel({ currentSql, currentTitle, onOpen, onClose }:
       <div className="shrink-0 space-y-1.5 p-2">
         <button
           type="button"
-          onClick={() => void saveCurrent()}
+          onClick={onSaveCurrent}
+          title={`현재 쿼리 저장 — ${saveShortcut}`}
           className="w-full rounded bg-blue-600 px-2 py-1 text-xs text-white hover:bg-blue-700"
         >
-          현재 쿼리 저장
+          현재 쿼리 저장 ({saveShortcut})
         </button>
         <input
           type="search"
@@ -80,7 +71,7 @@ export function SavedQueriesPanel({ currentSql, currentTitle, onOpen, onClose }:
           <li key={e.id} className="group mb-1 rounded border border-gray-200 bg-white p-1.5">
             <button
               type="button"
-              onClick={() => onOpen(e.name, e.sql)}
+              onClick={() => onOpen(e)}
               title="새 쿼리 탭에서 열기"
               className="block w-full truncate text-left text-xs font-medium text-gray-800 hover:text-blue-700"
             >

@@ -248,6 +248,9 @@ export function resultIds(tab: QueryTabState): string[] {
 /** SQL drafts live outside React state — CodeMirror is the source of truth. */
 export const sqlDrafts = new Map<string, string>();
 
+/** tabId -> saved query this tab edits, so saving overwrites instead of asking. */
+export const savedQueryIds = new Map<string, string>();
+
 export type TableDataView = {
   offset: number;
   sortAttribute: number | null;

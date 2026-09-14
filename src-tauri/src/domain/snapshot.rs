@@ -41,6 +41,9 @@ pub struct TabSnapshot {
     pub sql: String,
     #[serde(default)]
     pub id: Option<String>,
+    /// The saved query this tab edits, so Cmd+S still overwrites after a restart.
+    #[serde(default)]
+    pub saved_query_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

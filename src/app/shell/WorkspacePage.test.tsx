@@ -9,7 +9,8 @@ import { openConnections } from "../../entities/connection/openConnections";
 import { historyStore } from "../../entities/query/historyStore";
 import { editStore } from "../../entities/result/editStore";
 import { resultStore } from "../../entities/result/resultStore";
-import { dispatchWorkspace, emptyWorkspace, getTabGroups, resultIds, sqlDrafts, tableDataViews, workspaceStates } from "../../entities/workspace/workspaceStore";
+import { dispatchWorkspace, emptyWorkspace, getTabGroups, resultIds, savedQueryIds, sqlDrafts, tableDataViews, workspaceStates } from "../../entities/workspace/workspaceStore";
+import { savedQueryStore } from "../../entities/query/savedQueryStore";
 import type { ConnectionProfile, ExecutionAccepted, QueryStreamEvent } from "../../generated/ipc-types";
 import { ipc } from "../../shared/ipc/invoke";
 import { restoreWorkspace, saveWorkspaceNow } from "../../entities/workspace/persistence";
@@ -528,4 +529,32 @@ it("starts a newly opened Table Data tab on page one and restores each tab's own
   await act(async () => { fireEvent.click(screen.getByRole("tab", { name: "alpha" })); });
   expect(screen.getByText("201–400행")).toBeTruthy();
   expect(ipc.tableDataExecute).toHaveBeenCalledTimes(3);
+});
+
+it("saves the active query by shortcut: names it once, then overwrites it silently", async () => {
+  HTMLDialogElement.prototype.showModal = function () { this.open = true; };
+  HTMLDialogElement.prototype.close = function () { this.open = false; this.dispatchEvent(new Event("close")); };
+  savedQueryIds.clear();
+  savedQueryStore.hydrate([]);
+  await mountWorkspace();
+  fireEvent.change(editor(), { target: { value: "SELECT 'first'" } });
+
+  const save = () => fireEvent.keyDown(window, { key: "s", code: "KeyS", metaKey: true });
+  await act(async () => { save(); });
+  const dialog = document.querySelector("dialog")!;
+  (dialog.querySelector("input") as HTMLInputElement).value = "일일 리포트";
+  await act(async () => {
+    dialog.querySelector<HTMLButtonElement>("button[type=submit]")!.click();
+    dialog.close();
+  });
+  await waitFor(() => expect(savedQueryStore.find("일일 리포트")?.sql).toBe("SELECT 'first'"));
+  // The tab takes the name it was saved under.
+  await screen.findByRole("tab", { name: "일일 리포트" });
+
+  // A tab already bound to a saved query overwrites it without asking again.
+  fireEvent.change(editor(), { target: { value: "SELECT 'second'" } });
+  await act(async () => { save(); });
+  await waitFor(() => expect(savedQueryStore.find("일일 리포트")?.sql).toBe("SELECT 'second'"));
+  expect(document.querySelector("dialog")).toBeNull();
+  expect(savedQueryStore.list()).toHaveLength(1);
 });
