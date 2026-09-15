@@ -188,3 +188,23 @@ test("keeps a dragged column width when another result is shown and back again",
   render(<ResultGrid resultTabId="grid" edit={{ editableColumns: new Set(["name"]) }} />);
   expect(header().style.width).toBe("200px");
 });
+
+test("Cmd+A selects every loaded cell and copies the whole grid", async () => {
+  const grid = screen.getByRole("grid");
+  const selected = () => screen.getAllByRole("gridcell").filter((cell) => cell.getAttribute("aria-selected") === "true").map((cell) => cell.textContent);
+  fireEvent.mouseDown(screen.getByText("Alpha"));
+  expect(selected()).toEqual(["Alpha"]);
+
+  fireEvent.keyDown(grid, { key: "a", code: "KeyA", metaKey: true });
+  expect(selected()).toEqual(["1", "Alpha", "2", "Beta"]);
+
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+  await act(async () => { fireEvent.keyDown(grid, { key: "c", ctrlKey: true }); });
+  expect(writeText).toHaveBeenCalledWith("1\tAlpha\n2\tBeta");
+
+  // Rows added but not yet saved are part of the grid too.
+  fireEvent.click(screen.getByRole("button", { name: /행 추가/ }));
+  fireEvent.keyDown(grid, { key: "a", code: "KeyA", metaKey: true });
+  expect(selected()).toHaveLength(6);
+});

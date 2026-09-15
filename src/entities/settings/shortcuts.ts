@@ -14,6 +14,7 @@ export const shortcutDefinitions = [
   { id: "nextTabArrow", label: "다음 탭 (방향키)", defaultValue: "Mod+Alt+ArrowRight" },
   { id: "tabByNumber", label: "번호로 탭 이동", defaultValue: "Mod+Digit" },
   { id: "selectGridRow", label: "그리드 행 전체 선택", defaultValue: "Shift+Space" },
+  { id: "selectAllGrid", label: "그리드 전체 선택", defaultValue: "Mod+KeyA" },
   { id: "copyGrid", label: "그리드 선택 영역 복사", defaultValue: "Mod+KeyC" },
   { id: "toggleAi", label: "AI 패널 열기/닫기", defaultValue: "Mod+Shift+KeyI" },
   { id: "openSettings", label: "설정 열기", defaultValue: "Mod+Comma" },

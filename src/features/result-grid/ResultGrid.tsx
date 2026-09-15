@@ -255,6 +255,15 @@ export function ResultGrid({ resultTabId, hiddenColumns, sort, onHeaderClick, ed
       return;
     }
     if (!columns.length || snapshot.rows.length + edits.inserts.length === 0) return;
+    if (shortcutMatches(e, shortcuts.selectAllGrid)) {
+      e.preventDefault();
+      // Only the rows fetched so far exist to select, same as copy already assumes.
+      setSelection({
+        anchor: { r: 0, c: 0 },
+        focus: { r: snapshot.rows.length + edits.inserts.length - 1, c: columns.length - 1 },
+      });
+      return;
+    }
     const position = selection?.focus ?? { r: 0, c: 0 };
     if (selection && shortcutMatches(e, shortcuts.selectGridRow)) {
       e.preventDefault();
