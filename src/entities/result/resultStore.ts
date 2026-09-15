@@ -157,6 +157,7 @@ class ResultStore {
     editStore.clear(resultTabId);
     this.states.delete(resultTabId);
     this.nextSequence.delete(resultTabId);
+    columnWidths.delete(resultTabId);
     this.emit(resultTabId);
   }
 
@@ -173,3 +174,19 @@ class ResultStore {
 }
 
 export const resultStore = new ResultStore();
+
+/**
+ * resultTabId -> column name -> pixel width. Outside React because the grid is
+ * unmounted whenever another Result tab is shown, and a width the user dragged
+ * should still be there when they come back. Dropped with the result itself.
+ */
+const columnWidths = new Map<string, Map<string, number>>();
+
+export function resultColumnWidths(resultTabId: string): Map<string, number> {
+  let widths = columnWidths.get(resultTabId);
+  if (!widths) {
+    widths = new Map();
+    columnWidths.set(resultTabId, widths);
+  }
+  return widths;
+}

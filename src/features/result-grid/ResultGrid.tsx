@@ -1,7 +1,7 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { editStore, type InsertCell } from "../../entities/result/editStore";
-import { resultStore } from "../../entities/result/resultStore";
+import { resultColumnWidths, resultStore } from "../../entities/result/resultStore";
 import type { ColumnMeta, DbValue } from "../../generated/ipc-types";
 import { ipc } from "../../shared/ipc/invoke";
 import { loadMoreRows } from "../../shared/ipc/queryChannel";
@@ -144,21 +144,19 @@ export function ResultGrid({ resultTabId, hiddenColumns, sort, onHeaderClick, ed
   const columns = hiddenColumns?.length
     ? snapshot.columns.filter((c) => !hiddenColumns.includes(c.name))
     : snapshot.columns;
-  const [columnWidths, setColumnWidths] = useState<Record<string, number>>({});
   const resizingColumn = useRef<{ name: string; startX: number; startWidth: number } | null>(null);
   const DEFAULT_COLUMN_WIDTH = 200;
   const MIN_COLUMN_WIDTH = 60;
 
-  useEffect(() => {
-    if (!columns.length) return;
-    setColumnWidths((current) => {
-      const next = { ...current };
-      for (const column of columns) if (next[column.name] == null) next[column.name] = DEFAULT_COLUMN_WIDTH;
-      return next;
-    });
-  }, [columns]);
-
-  const getColumnWidth = (name: string) => columnWidths[name] ?? DEFAULT_COLUMN_WIDTH;
+  // Read through the store on every render, so showing another result's grid
+  // picks up that result's widths without needing a remount.
+  const [, redrawColumns] = useState(0);
+  const columnWidths = resultColumnWidths(resultTabId);
+  const getColumnWidth = (name: string) => columnWidths.get(name) ?? DEFAULT_COLUMN_WIDTH;
+  const setColumnWidth = (name: string, width: number) => {
+    columnWidths.set(name, width);
+    redrawColumns((count) => count + 1);
+  };
   const onColumnResizeStart = (name: string, event: React.PointerEvent) => {
     event.preventDefault();
     event.stopPropagation();
@@ -170,7 +168,7 @@ export function ResultGrid({ resultTabId, hiddenColumns, sort, onHeaderClick, ed
       if (!resizingColumn.current) return;
       const delta = next.clientX - resizingColumn.current.startX;
       const width = Math.max(MIN_COLUMN_WIDTH, Math.round(resizingColumn.current.startWidth + delta));
-      setColumnWidths((current) => ({ ...current, [columnName]: width }));
+      setColumnWidth(columnName, width);
     };
     const stop = () => {
       resizingColumn.current = null;

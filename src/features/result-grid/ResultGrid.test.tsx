@@ -162,3 +162,29 @@ test("exports unloaded rows too without expanding the visible result", async () 
   expect(exported).toHaveLength(450);
   expect(resultStore.getSnapshot("grid").rows).toHaveLength(200);
 });
+
+test("keeps a dragged column width when another result is shown and back again", () => {
+  const header = () => screen.getAllByRole("columnheader").find((cell) => cell.textContent?.startsWith("name"))!;
+  const handle = header().querySelector('[role="presentation"]')!;
+  expect(header().style.width).toBe("200px");
+
+  fireEvent.pointerDown(handle, { clientX: 100 });
+  act(() => {
+    document.dispatchEvent(new PointerEvent("pointermove", { clientX: 260 }));
+    document.dispatchEvent(new PointerEvent("pointerup"));
+  });
+  expect(header().style.width).toBe("360px");
+
+  // Switching Result tabs unmounts the grid; the width belongs to the result.
+  cleanup();
+  render(<ResultGrid resultTabId="grid" edit={{ editableColumns: new Set(["name"]) }} />);
+  expect(header().style.width).toBe("360px");
+
+  // Releasing the result drops its widths with it.
+  act(() => { resultStore.dispose("grid"); });
+  cleanup();
+  resultStore.create("grid");
+  resultStore.setColumns("grid", ["id", "name"].map((name, index) => ({ name, index, pgTypeOid: 25, pgTypeName: "text", category: "text", source: null, nullable: true, editable: false })));
+  render(<ResultGrid resultTabId="grid" edit={{ editableColumns: new Set(["name"]) }} />);
+  expect(header().style.width).toBe("200px");
+});
