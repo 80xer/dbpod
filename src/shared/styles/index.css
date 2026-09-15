@@ -127,6 +127,11 @@ html .dbpod-editor-has-selection .cm-activeLine { background: transparent !impor
 html .dbpod-editor-has-selection .cm-activeLineGutter { background: transparent !important; }
 html[data-theme="dark"] .cm-cursor,
 html[data-theme="dark"] .cm-dropCursor { border-left-color: #f9fafb !important; }
+/* Reparented to <body>, so it needs to out-rank the panes it now floats over. */
+html .cm-tooltip {
+  z-index: 45;
+}
+
 html[data-theme="dark"] .cm-tooltip-autocomplete {
   background: #111827;
   color: #d1d5db;

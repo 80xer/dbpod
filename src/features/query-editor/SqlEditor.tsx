@@ -3,7 +3,7 @@ import { autocompletion } from "@codemirror/autocomplete";
 import { indentWithTab } from "@codemirror/commands";
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { EditorState, Prec } from "@codemirror/state";
-import { EditorView, keymap } from "@codemirror/view";
+import { EditorView, keymap, tooltips } from "@codemirror/view";
 import { parseMixed, type SyntaxNode } from "@lezer/common";
 import { tags } from "@lezer/highlight";
 import { basicSetup } from "codemirror";
@@ -98,6 +98,9 @@ export function SqlEditor({
           basicSetup,
           sql({ dialect: postgresWithRoutineBodies }),
           ...(connectionId && database ? [autocompletion({ override: [sqlCompletionSource(connectionId, database)], filterStrict: true })] : []),
+          // The editor pane clips its overflow, so a completion list opening near
+          // the bottom edge is cut off by the Result area below it.
+          tooltips({ parent: document.body }),
           syntaxHighlighting(dbpodHighlightStyle),
           EditorState.readOnly.of(readOnly),
           EditorView.editable.of(!readOnly),

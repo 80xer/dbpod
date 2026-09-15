@@ -146,3 +146,20 @@ it("uses Tab and Shift+Tab for editor indentation without moving focus", () => {
   fireEvent.keyDown(content, { key: "Tab", code: "Tab", shiftKey: true });
   expect(view.state.doc.toString()).toBe("SELECT 1;");
 });
+
+it("renders the completion list outside the editor, which clips its overflow", async () => {
+  let view!: EditorView;
+  const source = "SELECT  FROM cms.fnn_fy_his;";
+  const pos = source.indexOf("SELECT ") + 7;
+  const { container } = render(<SqlEditor initialSql={source} connectionId="completion" database="postgres"
+    onViewReady={(next) => { if (next) view = next; }} />);
+  view.dispatch({ changes: { from: pos, insert: "c" }, selection: { anchor: pos + 1 }, userEvent: "input.type" });
+  await waitFor(() => expect(currentCompletions(view.state).length).toBeGreaterThan(0));
+  const tooltip = await waitFor(() => {
+    const element = document.querySelector(".cm-tooltip-autocomplete");
+    expect(element).toBeTruthy();
+    return element!;
+  });
+  expect(container.contains(tooltip)).toBe(false);
+  expect(tooltip.closest("body")).toBeTruthy();
+});
