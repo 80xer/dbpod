@@ -26,6 +26,7 @@ import { ObjectSidebar } from "../../features/object-explorer/ObjectSidebar";
 import { HistoryPanel } from "../../features/query-history/HistoryPanel";
 import { SavedQueriesPanel } from "../../features/saved-queries/SavedQueriesPanel";
 import type { DatabaseObjectSummary } from "../../generated/ipc-types";
+import { clearCompletionCache } from "../../features/query-editor/sqlCompletion";
 import {
   firstKeyword,
   statementAt,
@@ -279,6 +280,50 @@ function WorkspaceContent({ connectionId }: { connectionId: string }) {
     }
     finally { setChangingDatabase(false); }
   };
+  /**
+   * One button for two different staleness problems: a schema that moved under
+   * the caches, and a connection the server dropped. The user has no way to
+   * tell which they are looking at, so refresh finds out.
+   */
+  const refresh = async () => {
+    if (changingDatabase) return;
+    setChangingDatabase(true);
+    setNotice("");
+    try {
+      clearCompletionCache(connectionId);
+      await queryClient.cancelQueries({ predicate: (q) => q.queryKey[1] === connectionId });
+      await queryClient.refetchQueries({ predicate: (q) => q.queryKey[1] === connectionId });
+      // The refetch above is what proves the connection still answers.
+      await ipc.metadataListDatabases(connectionId);
+      setToast({ text: "새로고침 완료", at: Date.now() });
+    } catch (e) {
+      const error = e as { code?: string; message?: string };
+      if (error.code !== "CONNECTION_LOST") {
+        showError(e);
+        return;
+      }
+      if (!window.confirm("연결이 끊어졌습니다. 다시 연결할까요?\n\n조회 결과와 저장하지 않은 편집을 닫습니다. SQL 초안은 보관합니다.")) {
+        setNotice("연결이 끊어졌습니다. 새로고침으로 다시 연결할 수 있습니다.");
+        return;
+      }
+      try {
+        await saveWorkspaceNow();
+        await ipc.connectionReconnect({ connectionId });
+        for (const tab of state.tabs) disposeTab(tab);
+        historyStore.clear(connectionId);
+        queryClient.removeQueries({ predicate: (q) => q.queryKey[1] === connectionId });
+        // Remounting the workspace is how a fresh set of sessions is picked up.
+        workspaceStates.delete(connectionId);
+        openConnections.set(connectionId, { ...profile });
+        setToast({ text: "다시 연결했습니다", at: Date.now() });
+      } catch (reconnectError) {
+        showError(reconnectError);
+      }
+    } finally {
+      setChangingDatabase(false);
+    }
+  };
+
   const protectedTabs = (tabs: QueryTabState[]): boolean => {
     if (tabs.some((t) => t.runningExecutionId?.startsWith("pending:")) || tabs.some((t) => resultIds(t).some((id) => editStore.getSnapshot(id).locked))) {
       setNotice("실행 준비 또는 저장 중입니다. 완료 후 닫아 주세요.");
@@ -433,6 +478,16 @@ function WorkspaceContent({ connectionId }: { connectionId: string }) {
             title="저장된 쿼리"
           >
             💾
+          </button>
+          <button
+            type="button"
+            onClick={() => void refresh()}
+            disabled={changingDatabase}
+            aria-label="연결 새로고침"
+            title="연결 새로고침 — 스키마 캐시를 비우고, 연결이 끊겼으면 다시 연결합니다"
+            className="rounded border border-gray-300 px-2 py-1 text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-40"
+          >
+            ↻
           </button>
           <button
             type="button"

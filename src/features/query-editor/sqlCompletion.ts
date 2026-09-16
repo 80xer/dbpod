@@ -8,6 +8,15 @@ const columnsCache = new Map<string, Promise<string[]>>();
 
 function unquote(value: string): string { return value.replace(/^"|"$/g, ""); }
 
+/**
+ * These caches never expire on their own, so a schema change stays invisible to
+ * completion long after the object tree has caught up. Refresh empties them.
+ */
+export function clearCompletionCache(connectionId: string): void {
+  for (const key of [...catalogCache.keys()]) if (key.startsWith(`${connectionId}:`)) catalogCache.delete(key);
+  for (const key of [...columnsCache.keys()]) if (key.startsWith(`${connectionId}:`)) columnsCache.delete(key);
+}
+
 async function catalog(connectionId: string, database: string): Promise<Catalog[]> {
   const key = `${connectionId}:${database}`;
   let pending = catalogCache.get(key);

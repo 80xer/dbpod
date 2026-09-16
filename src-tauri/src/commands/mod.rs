@@ -437,6 +437,14 @@ pub async fn connection_switch_database(
 }
 
 #[tauri::command]
+pub async fn connection_reconnect(
+    state: State<'_, AppState>,
+    connection_id: String,
+) -> Result<ConnectionOpenResponse, AppError> {
+    connection_service::connection_reconnect(&state, &connection_id).await
+}
+
+#[tauri::command]
 pub async fn metadata_list_databases(
     state: State<'_, AppState>,
     connection_id: String,

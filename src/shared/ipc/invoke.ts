@@ -60,6 +60,8 @@ export const ipc = {
     invoke<ConnectionOpenResponse>("connection_open", { request }),
   connectionSwitchDatabase: (args: { connectionId: string; database: string }) =>
     invoke<ConnectionOpenResponse>("connection_switch_database", args),
+  connectionReconnect: (args: { connectionId: string }) =>
+    invoke<ConnectionOpenResponse>("connection_reconnect", args),
   metadataListDatabases: (connectionId: string) =>
     invoke<DatabaseInfo[]>("metadata_list_databases", { connectionId }),
   connectionClose: (request: ConnectionCloseRequest) =>

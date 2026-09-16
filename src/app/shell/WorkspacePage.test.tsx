@@ -20,7 +20,7 @@ vi.mock("@tauri-apps/api/core", () => ({ Channel: class<T> { onmessage: (event: 
 vi.mock("../../shared/ipc/invoke", () => ({ ipc: {
   queryExecute: vi.fn(), queryCancel: vi.fn(), tableDataExecute: vi.fn(), queryAckChunk: vi.fn(), metadataGetTable: vi.fn(),
   resultRelease: vi.fn(), querySessionClose: vi.fn(), connectionClose: vi.fn(),
-  connectionSwitchDatabase: vi.fn(), metadataGetRoutineDefinition: vi.fn(),
+  connectionSwitchDatabase: vi.fn(), connectionReconnect: vi.fn(), metadataListDatabases: vi.fn(), metadataGetRoutineDefinition: vi.fn(),
 } }));
 vi.mock("../../entities/workspace/persistence", () => ({
   restoreWorkspace: vi.fn(), saveWorkspaceSoon: vi.fn(), saveWorkspaceNow: vi.fn(), preloadSnapshot: vi.fn(),
@@ -580,4 +580,34 @@ it("shows whether a result is pinned, and a pinned result survives the next run"
   const results = workspaceStates.get("A")!.tabs[0].resultTabs;
   expect(results).toHaveLength(2);
   expect(results[0].id).toBe(first.id);
+});
+
+it("refreshes stale metadata, and offers to reconnect only when the server dropped the connection", async () => {
+  await mountWorkspace();
+  const refresh = () => screen.getByRole("button", { name: "연결 새로고침" });
+
+  // A live connection only drops the caches; nothing is torn down.
+  vi.mocked(ipc.metadataListDatabases).mockResolvedValueOnce([{ name: "db", canConnect: true }]);
+  await act(async () => { fireEvent.click(refresh()); });
+  expect(ipc.connectionReconnect).not.toHaveBeenCalled();
+  expect(screen.getByRole("status").textContent).toContain("새로고침");
+  expect(workspaceStates.get("A")).toBeTruthy();
+
+  // Any other failure is reported as-is, never as a lost connection.
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+  vi.mocked(ipc.metadataListDatabases).mockRejectedValueOnce({ code: "POSTGRES_ERROR", message: "permission denied" });
+  await act(async () => { fireEvent.click(refresh()); });
+  expect(confirm).not.toHaveBeenCalled();
+  expect(ipc.connectionReconnect).not.toHaveBeenCalled();
+  expect(screen.getByRole("alert").textContent).toContain("permission denied");
+
+  // A dropped connection asks first, then rebuilds the workspace.
+  vi.mocked(ipc.metadataListDatabases).mockRejectedValueOnce({ code: "CONNECTION_LOST", message: "database connection lost" });
+  vi.mocked(ipc.connectionReconnect).mockResolvedValueOnce({ connectionId: "A", profileId: "A", database: "db", serverVersion: "17" });
+  await act(async () => { fireEvent.click(refresh()); });
+  expect(confirm).toHaveBeenCalled();
+  expect(ipc.connectionReconnect).toHaveBeenCalledWith({ connectionId: "A" });
+  // Drafts are written out before the teardown, which is what carries them across.
+  expect(saveWorkspaceNow).toHaveBeenCalled();
+  expect(workspaceStates.get("A")).toBeUndefined();
 });

@@ -243,6 +243,34 @@ pub async fn connection_switch_database(
     connection_id: &str,
     database: &str,
 ) -> Result<ConnectionOpenResponse, AppError> {
+    switch_database(state, connection_id, database, false).await
+}
+
+/// Reopens the control connection to the database already in use. The server
+/// having restarted leaves sessions looking busy, so recovery cannot wait for
+/// them to finish: they are torn down like a database switch tears them down.
+pub async fn connection_reconnect(
+    state: &AppState,
+    connection_id: &str,
+) -> Result<ConnectionOpenResponse, AppError> {
+    let database = {
+        let workspaces = state.workspaces.lock().unwrap();
+        workspaces
+            .get(connection_id)
+            .ok_or_else(|| AppError::invalid_request("unknown connection"))?
+            .profile
+            .database
+            .clone()
+    };
+    switch_database(state, connection_id, &database, true).await
+}
+
+async fn switch_database(
+    state: &AppState,
+    connection_id: &str,
+    database: &str,
+    reconnect: bool,
+) -> Result<ConnectionOpenResponse, AppError> {
     if database.is_empty() || database.contains('\0') || database.len() > 63 {
         return Err(AppError::invalid_request("invalid database name"));
     }
@@ -270,7 +298,7 @@ pub async fn connection_switch_database(
         let ws = workspaces
             .get(connection_id)
             .ok_or_else(|| AppError::invalid_request("connection was closed"))?;
-        if ws.profile.database == database {
+        if !reconnect && ws.profile.database == database {
             return Ok(ConnectionOpenResponse {
                 connection_id: connection_id.into(),
                 profile_id: ws.profile.id.clone(),
@@ -289,10 +317,12 @@ pub async fn connection_switch_database(
         let ws = workspaces
             .get_mut(connection_id)
             .ok_or_else(|| AppError::invalid_request("connection was closed"))?;
-        if ws.sessions.values().any(|s| {
-            s.busy.load(Ordering::Acquire)
-                || *s.transaction.lock().unwrap() != TransactionState::Idle
-        }) {
+        if !reconnect
+            && ws.sessions.values().any(|s| {
+                s.busy.load(Ordering::Acquire)
+                    || *s.transaction.lock().unwrap() != TransactionState::Idle
+            })
+        {
             return Err(AppError::new(
                 "CONNECTION_BUSY",
                 "finish queries and transactions before changing database",

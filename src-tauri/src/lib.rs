@@ -53,6 +53,7 @@ pub fn run() {
             commands::connection_test,
             commands::connection_open,
             commands::connection_switch_database,
+            commands::connection_reconnect,
             commands::metadata_list_databases,
             commands::connection_close,
             commands::query_session_open,
