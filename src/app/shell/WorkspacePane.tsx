@@ -99,7 +99,7 @@ export function WorkspacePane({ connectionId, database, tab, readOnly, dispatch,
             }}
           />
 
-          <div className="flex min-h-0 flex-col overflow-hidden" style={{ flexGrow: 100 - editorShare, flexBasis: 0 }}>
+          <div data-result-area="" className="flex min-h-0 flex-col overflow-hidden" style={{ flexGrow: 100 - editorShare, flexBasis: 0 }}>
           {/* Result Tab bar */}
           {tab.resultTabs.length > 0 && (
             <div className="flex shrink-0 items-center gap-1 overflow-x-auto border-t border-gray-200 bg-gray-50 px-2 py-0.5" role="tablist">

@@ -7,6 +7,7 @@ import { createMemoryHistory, createRouter, RouterProvider } from "@tanstack/rea
 import { afterEach, expect, it, vi } from "vitest";
 import { openConnections } from "../../entities/connection/openConnections";
 import { resultStore } from "../../entities/result/resultStore";
+import { editStore } from "../../entities/result/editStore";
 import { dispatchWorkspace, emptyWorkspace, resultIds, sqlDrafts, workspaceStates } from "../../entities/workspace/workspaceStore";
 import { ipc } from "../../shared/ipc/invoke";
 import { router } from "../router";
@@ -17,7 +18,7 @@ vi.hoisted(() => {
 
 vi.mock("@tauri-apps/api/core", () => ({ Channel: class { onmessage = () => undefined; } }));
 vi.mock("../../shared/ipc/invoke", () => ({ ipc: {
-  queryExecute: vi.fn(), queryAckChunk: vi.fn(), resultRelease: vi.fn(), querySessionClose: vi.fn(),
+  queryExecute: vi.fn(), queryAckChunk: vi.fn(), resultRelease: vi.fn(), querySessionClose: vi.fn(), metadataGetTable: vi.fn(),
 } }));
 vi.mock("../../entities/workspace/persistence", () => ({
   restoreWorkspace: vi.fn(), saveWorkspaceSoon: vi.fn(), saveWorkspaceNow: vi.fn(),
@@ -124,4 +125,94 @@ it("executes typed SQL in a split CodeMirror editor and renders its own result c
   expect(ipc.querySessionClose).toHaveBeenCalledWith({ sessionId: `session:${secondRightTab.id}`, rollbackOpenTransaction: true });
   expect(ipc.querySessionClose).not.toHaveBeenCalledWith(expect.objectContaining({ sessionId: "session:left" }));
   expect(screen.getByRole("gridcell", { name: "LEFT RESULT" })).toBeTruthy();
+});
+
+// The user's exact report: edit a cell in an editable result, do not save, press the
+// refresh key. Real grid, real edit bar, real edit store, real key routing.
+it("asks before a refresh discards a cell edit, whether the edit was confirmed or is still being typed", async () => {
+  vi.spyOn(window, "scrollTo").mockImplementation(() => undefined);
+  Range.prototype.getClientRects = () => [] as unknown as DOMRectList;
+  Range.prototype.getBoundingClientRect = () => new DOMRect();
+  openConnections.set("conn", {
+    id: "profile", name: "Dev", environment: "dev", database: "db", host: "localhost", port: 5432,
+    username: "tester", color: null, tlsMode: "verify-full", readOnly: false, queryTimeoutMs: 60000,
+    maxRows: 500, hasStoredCredential: false,
+  });
+  workspaceStates.set("conn", emptyWorkspace());
+  dispatchWorkspace("conn", { type: "TAB_ADDED", tabId: "left", title: "Left" });
+  sqlDrafts.set("left", "select *\nfrom   rpt.cntr_brkr\n  ;");
+  const relationOid = 100;
+  vi.mocked(ipc.queryAckChunk).mockResolvedValue(undefined);
+  vi.mocked(ipc.metadataGetTable).mockResolvedValue({
+    relationOid, schema: "rpt", name: "cntr_brkr", kind: "table", primaryKey: [1], uniqueKeys: [], rowLevelSecurity: false,
+    columns: [
+      { attributeNumber: 1, name: "brkr_cd", pgTypeOid: 25, pgTypeName: "text", nullable: false, defaultExpr: null, comment: null, isGenerated: false, isPrimaryKey: true },
+      { attributeNumber: 2, name: "brkr_nm", pgTypeOid: 25, pgTypeName: "text", nullable: true, defaultExpr: null, comment: null, isGenerated: false, isPrimaryKey: false },
+    ],
+  });
+  vi.mocked(ipc.queryExecute).mockImplementation(async (request, channel) => {
+    const executionId = `execution:${request.resultTabId}:${Date.now()}`;
+    setTimeout(() => {
+      channel.onmessage({ type: "started", executionId, backendPid: 123, startedAt: "2026-09-18T00:00:00Z" });
+      channel.onmessage({ type: "columns", executionId, columns: [
+        { name: "brkr_cd", index: 0, pgTypeOid: 25, pgTypeName: "text", category: "text", source: { relationOid, attributeNumber: 1 }, nullable: false, editable: true },
+        { name: "brkr_nm", index: 1, pgTypeOid: 25, pgTypeName: "text", category: "text", source: { relationOid, attributeNumber: 2 }, nullable: true, editable: true },
+      ] });
+      channel.onmessage({ type: "rows", executionId, sequence: 0, rows: [[{ kind: "text", value: "001" }, { kind: "text", value: "다올투자증권" }]] });
+      channel.onmessage({ type: "completed", executionId, rowCount: 1, truncated: false, durationMs: 1, transactionState: "idle" });
+    }, 0);
+    return { executionId, sessionId: `session:${request.queryTabId}` };
+  });
+  const testRouter = createRouter({ routeTree: router.options.routeTree, history: createMemoryHistory({ initialEntries: ["/workspace/conn"] }) });
+  await testRouter.load();
+  client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(<StrictMode><QueryClientProvider client={client}><RouterProvider router={testRouter} /></QueryClientProvider></StrictMode>);
+  await screen.findByLabelText("SQL 편집기");
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "▶ 실행" })); });
+  const cell = await screen.findByRole("gridcell", { name: "다올투자증권" });
+  await screen.findByText("편집 가능 (더블클릭)");
+  const resultTabId = workspaceStates.get("conn")!.tabs[0].activeResultTabId!;
+  const grid = screen.getByRole("grid", { name: "쿼리 결과" });
+  const refresh = (target: Element) => fireEvent.keyDown(target, { key: "r", code: "KeyR", metaKey: true });
+  // jsdom has no showModal/close; the in-app confirm dialog only needs the close event.
+  HTMLDialogElement.prototype.showModal = function () { this.open = true; };
+  HTMLDialogElement.prototype.close = function () { this.open = false; this.dispatchEvent(new Event("close")); };
+  const answerConfirm = async (choice: "확인" | "취소") => {
+    const dialog = [...document.querySelectorAll("dialog")].find((d) => d.textContent?.includes("버리고 새로 조회할까요?"));
+    expect(dialog).toBeTruthy();
+    await act(async () => { [...dialog!.querySelectorAll("button")].find((b) => b.textContent === choice)!.click(); });
+  };
+
+  // Confirmed with Enter: the edit store knows about it.
+  fireEvent.doubleClick(cell);
+  fireEvent.change(screen.getByLabelText("셀 편집"), { target: { value: "다올증권" } });
+  await act(async () => { fireEvent.keyDown(screen.getByLabelText("셀 편집"), { key: "Enter" }); });
+  expect(editStore.getSnapshot(resultTabId).pendingCount).toBe(1);
+  expect(screen.getByText("변경 1건 대기 중")).toBeTruthy();
+  expect(document.activeElement).toBe(grid);
+  await act(async () => { refresh(document.activeElement!); });
+  await answerConfirm("취소");
+  expect(ipc.queryExecute).toHaveBeenCalledTimes(1);
+  expect(editStore.getSnapshot(resultTabId).pendingCount).toBe(1);
+
+  // Still typing, Enter never pressed: only the open editor holds the change.
+  await act(async () => { editStore.clear(resultTabId); });
+  fireEvent.doubleClick(screen.getByRole("gridcell", { name: "다올투자증권" }));
+  const editor = screen.getByLabelText("셀 편집");
+  fireEvent.change(editor, { target: { value: "다올증권" } });
+  expect(editStore.getSnapshot(resultTabId).pendingCount).toBe(0);
+  await act(async () => { refresh(editor); });
+  await answerConfirm("취소");
+  expect(ipc.queryExecute).toHaveBeenCalledTimes(1);
+  // The dialog taking focus blurred the editor, which commits: the typed value lives on as a pending edit.
+  expect(editStore.getSnapshot(resultTabId).pendingCount).toBe(1);
+  expect(screen.getByRole("gridcell", { name: "다올증권" })).toBeTruthy();
+
+  // Accepting throws the edit away and reruns the result's own SQL.
+  await act(async () => { refresh(grid); });
+  await answerConfirm("확인");
+  expect(ipc.queryExecute).toHaveBeenCalledTimes(2);
+  expect(ipc.queryExecute).toHaveBeenLastCalledWith(expect.objectContaining({ resultTabId, sql: "select *\nfrom   rpt.cntr_brkr" }), expect.anything());
+  expect(await screen.findByRole("gridcell", { name: "다올투자증권" })).toBeTruthy();
+  expect(editStore.getSnapshot(resultTabId).pendingCount).toBe(0);
 });

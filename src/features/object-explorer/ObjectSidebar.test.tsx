@@ -5,7 +5,9 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { DatabaseObjectSummary } from "../../generated/ipc-types";
 import { ipc } from "../../shared/ipc/invoke";
 import { ObjectSidebar, resetExpansionState } from "./ObjectSidebar";
+import { confirmDialog } from "../../shared/ui/prompt";
 
+vi.mock("../../shared/ui/prompt", () => ({ confirmDialog: vi.fn() }));
 vi.mock("../../shared/ipc/invoke", () => ({
   ipc: { metadataListDatabases: vi.fn(), metadataListSchemas: vi.fn(), metadataListObjects: vi.fn(), metadataDropObject: vi.fn() },
 }));
@@ -64,7 +66,7 @@ it("nests partitions, preserves table opening and collapses whole branches", asy
 it("deletes tables and routines from their context menu after confirmation", async () => {
   const routine = { ...table(30, "lookup"), kind: "function" as const, functionArguments: "integer", canSelect: null };
   vi.mocked(ipc.metadataListObjects).mockImplementation(async (req) => req.kinds.includes("function") ? [routine] : [parent]);
-  const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+  const confirm = vi.mocked(confirmDialog).mockResolvedValue(true);
   mount();
 
   fireEvent.click(await screen.findByRole("button", { name: "public Tables" }));

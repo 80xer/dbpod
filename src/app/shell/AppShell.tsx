@@ -4,12 +4,13 @@ import { resultIds, workspaceStates } from "../../entities/workspace/workspaceSt
 import { ipc } from "../../shared/ipc/invoke";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { getPersistenceError, saveWorkspaceNow, subscribePersistence } from "../../entities/workspace/persistence";
-import { Link, Outlet, useParams } from "@tanstack/react-router";
+import { Link, Outlet, useNavigate, useParams } from "@tanstack/react-router";
 import { useOpenConnections } from "../../entities/connection/openConnections";
 import { environmentStyles } from "../../entities/connection/environmentStyles";
 import { AIChatPanel } from "../../features/ai/AIChatPanel";
 import { getAppSettings } from "../../entities/settings/appSettings";
 import { shortcutMatches } from "../../entities/settings/shortcuts";
+import { confirmDialog } from "../../shared/ui/prompt";
 
 function ConnectionRail() {
   const connections = useOpenConnections();
@@ -60,14 +61,32 @@ export function AppShell() {
   const aiResizeStart = useRef<{ pointerId: number; x: number; width: number } | null>(null);
   const params = useParams({ strict: false }) as { connectionId?: string };
   const connections = useOpenConnections();
+  const navigate = useNavigate();
   const workspaceOpen = Boolean(params.connectionId && connections.some(([id]) => id === params.connectionId));
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.isComposing || event.repeat) return;
+      // A modal dialog owns the keyboard; switching connections behind it would strand it.
+      if (document.querySelector("dialog[open]")) return;
+      // Settings records a new binding from the raw keystroke, and this listener runs
+      // first, so it has to stay out of the way while a combination is being captured.
+      if (document.activeElement?.getAttribute("aria-label")?.endsWith("단축키")) return;
       const shortcuts = getAppSettings().shortcuts;
       if (shortcutMatches(event, shortcuts.openSettings)) {
         event.preventDefault();
         document.querySelector<HTMLAnchorElement>('a[aria-label="설정"]')?.click();
+        return;
+      }
+      const step = shortcutMatches(event, shortcuts.previousConnection) ? -1
+        : shortcutMatches(event, shortcuts.nextConnection) ? 1 : 0;
+      if (step && connections.length) {
+        event.preventDefault();
+        event.stopPropagation();
+        const current = connections.findIndex(([id]) => id === params.connectionId);
+        // Off the rail (home, settings) the list is entered from whichever end the key points at.
+        const from = current >= 0 ? current : step > 0 ? -1 : 0;
+        const [connectionId] = connections[(from + step + connections.length) % connections.length];
+        void navigate({ to: "/workspace/$connectionId", params: { connectionId } });
         return;
       }
       if (!workspaceOpen || !shortcutMatches(event, shortcuts.toggleAi)) return;
@@ -76,7 +95,7 @@ export function AppShell() {
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [workspaceOpen]);
+  }, [workspaceOpen, connections, params.connectionId, navigate]);
   useEffect(() => {
     const preventBackspaceNavigation = (event: KeyboardEvent) => {
       // The macOS window-close accelerator is removed natively. Keep Cmd+W
@@ -104,22 +123,25 @@ export function AppShell() {
     let unlisten: (() => void) | undefined;
     void getCurrentWindow().onCloseRequested(async (event) => {
       event.preventDefault();
+      // Held for the whole attempt, question included: a second close request while
+      // the dialog is up must not stack another one.
       if (closing) return;
-      const tabs = [...workspaceStates.values()].flatMap((state) => state.tabs);
-      if (tabs.some((tab) => tab.runningExecutionId?.startsWith("pending:") || resultIds(tab).some((id) => editStore.getSnapshot(id).locked))) {
-        setCloseError("실행 준비 또는 저장이 완료된 후 앱을 닫아 주세요.");
-        return;
-      }
-      if (tabs.some((tab) => tab.runningExecutionId || (tab.transactionState && tab.transactionState !== "idle") || resultIds(tab).some((id) => editStore.getSnapshot(id).pendingCount)) || document.querySelector('[aria-label="셀 편집"]')) {
-        if (!window.confirm("저장하지 않은 편집을 버리고, 실행 중인 쿼리를 취소하며 열린 트랜잭션을 롤백한 후 종료할까요?")) return;
-      }
       closing = true;
       try {
+        const tabs = [...workspaceStates.values()].flatMap((state) => state.tabs);
+        if (tabs.some((tab) => tab.runningExecutionId?.startsWith("pending:") || resultIds(tab).some((id) => editStore.getSnapshot(id).locked))) {
+          setCloseError("실행 준비 또는 저장이 완료된 후 앱을 닫아 주세요.");
+          return;
+        }
+        if (tabs.some((tab) => tab.runningExecutionId || (tab.transactionState && tab.transactionState !== "idle") || resultIds(tab).some((id) => editStore.getSnapshot(id).pendingCount)) || document.querySelector('[aria-label="셀 편집"]')) {
+          if (!(await confirmDialog("저장하지 않은 편집을 버리고, 실행 중인 쿼리를 취소하며 열린 트랜잭션을 롤백한 후 종료할까요?"))) return;
+        }
         await saveWorkspaceNow();
         for (const connectionId of workspaceStates.keys()) await ipc.connectionClose({ connectionId });
         await getCurrentWindow().destroy();
       } catch (error) {
         setCloseError((error as Error).message ?? String(error));
+      } finally {
         closing = false;
       }
     }).then((off) => { if (disposed) off(); else unlisten = off; }).catch((error: unknown) => {

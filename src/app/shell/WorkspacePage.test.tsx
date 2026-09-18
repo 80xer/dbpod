@@ -9,13 +9,15 @@ import { openConnections } from "../../entities/connection/openConnections";
 import { historyStore } from "../../entities/query/historyStore";
 import { editStore } from "../../entities/result/editStore";
 import { resultStore } from "../../entities/result/resultStore";
-import { dispatchWorkspace, emptyWorkspace, getTabGroups, resultIds, savedQueryIds, sqlDrafts, tableDataViews, workspaceStates } from "../../entities/workspace/workspaceStore";
+import { dispatchWorkspace, emptyWorkspace, getTabGroups, resultIds, savedQueryIds, sqlDrafts, sqlSelections, tableDataViews, workspaceStates } from "../../entities/workspace/workspaceStore";
 import { savedQueryStore } from "../../entities/query/savedQueryStore";
 import type { ConnectionProfile, ExecutionAccepted, QueryStreamEvent } from "../../generated/ipc-types";
 import { ipc } from "../../shared/ipc/invoke";
 import { restoreWorkspace, saveWorkspaceNow } from "../../entities/workspace/persistence";
 import { router } from "../router";
 
+// Stands in for the edit bar's save button, which the save key presses.
+const editBar = vi.hoisted(() => ({ save: vi.fn(), disabled: false }));
 vi.mock("@tauri-apps/api/core", () => ({ Channel: class<T> { onmessage: (event: T) => void = () => undefined; } }));
 vi.mock("../../shared/ipc/invoke", () => ({ ipc: {
   queryExecute: vi.fn(), queryCancel: vi.fn(), tableDataExecute: vi.fn(), queryAckChunk: vi.fn(), metadataGetTable: vi.fn(),
@@ -27,7 +29,9 @@ vi.mock("../../entities/workspace/persistence", () => ({
   getPersistenceError: () => "", subscribePersistence: () => () => undefined,
 }));
 vi.mock("../../features/connections/ConnectionsPage", () => ({ ConnectionsPage: () => null }));
-vi.mock("../../features/result-grid/QueryResultPane", () => ({ QueryResultPane: () => null }));
+vi.mock("../../features/result-grid/QueryResultPane", () => ({
+  QueryResultPane: () => <button type="button" data-save-edits="" disabled={editBar.disabled} onClick={editBar.save}>저장…</button>,
+}));
 vi.mock("../../features/result-grid/ResultGrid", () => ({ ResultGrid: () => null }));
 vi.mock("../../features/object-explorer/ObjectSidebar", () => ({
   ObjectSidebar: ({ onOpenObject, onChangeDatabase }: { onOpenObject: (table: { oid: number; schema: string; name: string; kind?: string; functionArguments?: string }) => void; onChangeDatabase: (database: string) => void }) => <>
@@ -47,12 +51,30 @@ vi.mock("../../features/query-editor/SqlEditor", async () => {
   }) => {
     const sql = useRef(initialSql);
     const input = useRef<HTMLTextAreaElement>(null);
+    // The caret outlives the textarea, the way CodeMirror's selection outlives its DOM.
+    const caret = useRef({ anchor: 0, head: 0 });
     useEffect(() => {
-      onViewReady?.({ focus: () => input.current?.focus(), state: { selection: { main: { from: 0, to: 0 } }, doc: { toString: () => sql.current } } } as unknown as EditorView);
+      const main = {
+        get anchor() { return caret.current.anchor; },
+        get head() { return caret.current.head; },
+        get from() { return Math.min(caret.current.anchor, caret.current.head); },
+        get to() { return Math.max(caret.current.anchor, caret.current.head); },
+      };
+      onViewReady?.({
+        focus: () => input.current?.focus(),
+        dispatch: ({ selection }: { selection?: { anchor: number; head: number } }) => {
+          if (!selection) return;
+          caret.current = selection;
+          input.current?.setSelectionRange(selection.anchor, selection.head);
+        },
+        state: { selection: { main }, doc: { toString: () => sql.current, get length() { return sql.current.length; } } },
+      } as unknown as EditorView);
       return () => onViewReady?.(null);
     }, []);
     return <textarea ref={input} aria-label={readOnly ? "정의 SQL" : "SQL"} readOnly={readOnly} defaultValue={initialSql} onKeyDown={(event) => {
       if (!readOnly && (event.metaKey || event.ctrlKey) && event.key === "Enter") onRun?.();
+    }} onSelect={(event) => {
+      caret.current = { anchor: event.currentTarget.selectionStart, head: event.currentTarget.selectionEnd };
     }} onChange={(event) => {
       sql.current = event.target.value;
       onDocChanged?.(sql.current);
@@ -74,9 +96,11 @@ function complete(channel: Channel<QueryStreamEvent>, executionId: string, count
 
 beforeEach(() => {
   vi.resetAllMocks();
+  editBar.disabled = false;
   vi.spyOn(window, "scrollTo").mockImplementation(() => undefined);
   workspaceStates.clear();
   sqlDrafts.clear();
+  sqlSelections.clear();
   tableDataViews.clear();
   historyStore.clear();
   for (const id of ["A", "B"]) {
@@ -100,11 +124,13 @@ beforeEach(() => {
 });
 afterEach(() => {
   cleanup();
+  document.querySelectorAll("dialog").forEach((dialog) => dialog.remove());
   vi.restoreAllMocks();
   client?.clear();
   for (const state of workspaceStates.values()) for (const workTab of state.tabs) for (const id of resultIds(workTab)) resultStore.dispose(id);
   workspaceStates.clear();
   sqlDrafts.clear();
+  sqlSelections.clear();
   tableDataViews.clear();
   historyStore.clear();
   for (const [id] of openConnections.entries()) openConnections.delete(id);
@@ -204,13 +230,14 @@ it("splits beside the current editor, runs each pane independently and preserves
   await waitFor(() => expect(screen.getAllByRole("textbox", { name: "SQL" }).map((el) => (el as HTMLTextAreaElement).value)).toEqual(["SELECT 'left'", "SELECT 'right'"]));
   expect(getTabGroups(workspaceStates.get("A")!).map((group) => group.activeTabId)).toEqual(["A-tab", rightTab.id]);
   editStore.setCell(rightResultId, 0, "name", { value: "unsaved" });
-  const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValue(true);
+  stubDialogs();
   const closeRight = () => within(screen.getByRole("region", { name: "쿼리 영역 2" })).getByRole("button", { name: "분할 영역 닫기" });
   await act(async () => { fireEvent.click(closeRight()); });
-  expect(confirm).toHaveBeenCalledTimes(1);
+  await answerDialog("저장하지 않은 편집은 버리고", "취소");
   expect(screen.getAllByRole("textbox", { name: "SQL" })).toHaveLength(2);
   expect(ipc.querySessionClose).not.toHaveBeenCalled();
   await act(async () => { fireEvent.click(closeRight()); });
+  await answerDialog("저장하지 않은 편집은 버리고", "확인");
   expect(editor().value).toBe("SELECT 'left'");
   expect(getTabGroups(workspaceStates.get("A")!)).toHaveLength(1);
   expect(ipc.resultRelease).toHaveBeenCalledWith({ resultTabId: rightResultId });
@@ -343,7 +370,7 @@ it("changes DB in the same connection, clears stale results and restores databas
   });
   dispatchWorkspace("A", { type: "RESULT_ADDED", tabId: "A-tab", resultTabId: "db-switch-dirty" });
   editStore.setCell("db-switch-dirty", 0, "name", { value: "unsaved edit" });
-  const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValue(true);
+  stubDialogs();
   const testRouter = await mountWorkspace();
   client!.setQueryDefaults(["objects"], { gcTime: Infinity });
   client!.setQueryDefaults(["schemas"], { gcTime: Infinity });
@@ -351,10 +378,11 @@ it("changes DB in the same connection, clears stale results and restores databas
   client!.setQueryData(["schemas", "B", false], ["other connection schema"]);
   fireEvent.change(editor(), { target: { value: "SELECT 'default DB draft'" } });
   await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Open analytics DB" })); });
-  expect(confirm).toHaveBeenCalled();
+  await answerDialog("DB를 변경하면", "취소");
   expect(ipc.connectionSwitchDatabase).not.toHaveBeenCalled();
   expect(editStore.getSnapshot("db-switch-dirty").pendingCount).toBe(1);
   await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Open analytics DB" })); });
+  await answerDialog("DB를 변경하면", "확인");
   await waitFor(() => expect(openConnections.get("A")?.database).toBe("analytics"));
   expect(ipc.connectionSwitchDatabase).toHaveBeenLastCalledWith({ connectionId: "A", database: "analytics" });
   expect(openConnections.entries()).toHaveLength(2); // A and the unrelated B; no new item.
@@ -594,10 +622,10 @@ it("refreshes stale metadata, and offers to reconnect only when the server dropp
   expect(workspaceStates.get("A")).toBeTruthy();
 
   // Any other failure is reported as-is, never as a lost connection.
-  const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+  stubDialogs();
   vi.mocked(ipc.metadataListDatabases).mockRejectedValueOnce({ code: "POSTGRES_ERROR", message: "permission denied" });
   await act(async () => { fireEvent.click(refresh()); });
-  expect(confirm).not.toHaveBeenCalled();
+  expect(openDialog("다시 연결할까요?")).toBeUndefined();
   expect(ipc.connectionReconnect).not.toHaveBeenCalled();
   expect(screen.getByRole("alert").textContent).toContain("permission denied");
 
@@ -605,9 +633,156 @@ it("refreshes stale metadata, and offers to reconnect only when the server dropp
   vi.mocked(ipc.metadataListDatabases).mockRejectedValueOnce({ code: "CONNECTION_LOST", message: "database connection lost" });
   vi.mocked(ipc.connectionReconnect).mockResolvedValueOnce({ connectionId: "A", profileId: "A", database: "db", serverVersion: "17" });
   await act(async () => { fireEvent.click(refresh()); });
-  expect(confirm).toHaveBeenCalled();
-  expect(ipc.connectionReconnect).toHaveBeenCalledWith({ connectionId: "A" });
+  await answerDialog("다시 연결할까요?", "확인");
+  await waitFor(() => expect(ipc.connectionReconnect).toHaveBeenCalledWith({ connectionId: "A" }));
   // Drafts are written out before the teardown, which is what carries them across.
   expect(saveWorkspaceNow).toHaveBeenCalled();
   expect(workspaceStates.get("A")).toBeUndefined();
+});
+
+it("returns the caret to the pane, tab and offset the connection was left in", async () => {
+  const testRouter = await mountWorkspace();
+  await act(async () => { dispatchWorkspace("A", { type: "TAB_ADDED", tabId: "right-1", split: true }); });
+  const right = screen.getAllByRole("textbox", { name: "SQL" })[1] as HTMLTextAreaElement;
+  fireEvent.change(right, { target: { value: "SELECT 'right pane'" } });
+  await act(async () => { right.focus(); });
+  right.setSelectionRange(7, 7);
+  fireEvent.select(right);
+
+  await act(async () => { await testRouter.navigate({ to: "/workspace/$connectionId", params: { connectionId: "B" } }); });
+  expect(document.activeElement).toBe(editor());
+  await act(async () => { await testRouter.navigate({ to: "/workspace/$connectionId", params: { connectionId: "A" } }); });
+
+  const restored = screen.getAllByRole("textbox", { name: "SQL" })[1] as HTMLTextAreaElement;
+  expect(workspaceStates.get("A")!.activeTabId).toBe("right-1");
+  expect(document.activeElement).toBe(restored);
+  expect(restored.selectionStart).toBe(7);
+});
+
+it("puts the caret in the first tab of a connection opened for the first time", async () => {
+  await mountWorkspace();
+  expect(document.activeElement).toBe(editor());
+  expect(editor().selectionStart).toBe(0);
+});
+
+it("re-runs the active result's own SQL on the refresh key, and only from the result area", async () => {
+  await mountWorkspace();
+  await act(async () => { fireEvent.click(runButton()); });
+  const resultTabId = tab().activeResultTabId!;
+  expect(ipc.queryExecute).toHaveBeenCalledTimes(1);
+
+  // The editor moved on, but a refresh repeats what this result actually ran.
+  fireEvent.change(editor(), { target: { value: "SELECT 'edited'" } });
+  const refresh = (target: Element) => {
+    const event = new KeyboardEvent("keydown", { key: "r", code: "KeyR", metaKey: true, bubbles: true, cancelable: true });
+    fireEvent(target, event);
+    return event.defaultPrevented;
+  };
+
+  // Cmd+R would reload the webview and drop the connection, so it never reaches the browser.
+  expect(refresh(editor())).toBe(true);
+  expect(ipc.queryExecute).toHaveBeenCalledTimes(1);
+
+  const resultTab = screen.getByRole("tab", { name: "Result 1" });
+  await act(async () => { expect(refresh(resultTab)).toBe(true); });
+  expect(ipc.queryExecute).toHaveBeenCalledTimes(2);
+  expect(ipc.queryExecute).toHaveBeenLastCalledWith(
+    expect.objectContaining({ connectionId: "A", queryTabId: "A-tab", resultTabId, sql: "SELECT 'A'" }),
+    expect.anything(),
+  );
+  expect(tab().resultTabs).toHaveLength(1);
+});
+
+it("says so when the result area has nothing to refresh yet", async () => {
+  await mountWorkspace();
+  const emptyResultArea = screen.getByText(/로 쿼리를 실행하세요/);
+  await act(async () => { fireEvent.keyDown(emptyResultArea, { key: "r", code: "KeyR", metaKey: true }); });
+  expect(ipc.queryExecute).not.toHaveBeenCalled();
+  expect(screen.getByRole("alert").textContent).toContain("새로고침할 결과가 없습니다");
+});
+
+const pressSave = (target: Element) => {
+  const event = new KeyboardEvent("keydown", { key: "s", code: "KeyS", metaKey: true, bubbles: true, cancelable: true });
+  fireEvent(target, event);
+  return event.defaultPrevented;
+};
+const stubDialogs = () => {
+  HTMLDialogElement.prototype.showModal = function () { this.open = true; };
+  HTMLDialogElement.prototype.close = function () { this.open = false; this.dispatchEvent(new Event("close")); };
+  savedQueryIds.clear();
+  savedQueryStore.hydrate([]);
+};
+
+it("commits the focused result's pending edits with the save key", async () => {
+  stubDialogs();
+  await mountWorkspace();
+  await act(async () => { fireEvent.click(runButton()); });
+  expect(pressSave(screen.getByRole("button", { name: "저장…" }))).toBe(true);
+  expect(editBar.save).toHaveBeenCalledTimes(1);
+  // The query-save prompt must not open on top of it.
+  expect(document.querySelector("dialog")).toBeNull();
+});
+
+it("leaves the save key inert over a result with nothing pending, and saves the query elsewhere", async () => {
+  stubDialogs();
+  editBar.disabled = true;
+  await mountWorkspace();
+  await act(async () => { fireEvent.click(runButton()); });
+  await act(async () => { expect(pressSave(screen.getByRole("button", { name: "저장…" }))).toBe(true); });
+  expect(editBar.save).not.toHaveBeenCalled();
+  expect(document.querySelector("dialog")).toBeNull();
+
+  await act(async () => { pressSave(editor()); });
+  expect(document.querySelector("dialog")).not.toBeNull();
+});
+
+// The in-app confirm: the webview's own confirm() answers with a truthy Promise and shows nothing.
+const openDialog = (text: string) => [...document.querySelectorAll("dialog")].find((d) => d.open && d.textContent?.includes(text));
+const answerDialog = async (text: string, choice: "확인" | "취소") => {
+  const dialog = openDialog(text);
+  expect(dialog).toBeTruthy();
+  await act(async () => { [...dialog!.querySelectorAll("button")].find((b) => b.textContent === choice)!.click(); });
+};
+const answerConfirm = (choice: "확인" | "취소") => answerDialog("저장하지 않은 변경이 있습니다. 버리고 새로 조회할까요?", choice);
+
+it("offers to drop unsaved edits before refreshing, and keeps them when declined", async () => {
+  stubDialogs();
+  await mountWorkspace();
+  await act(async () => { fireEvent.click(runButton()); });
+  const resultTabId = tab().activeResultTabId!;
+  act(() => { editStore.setCell(resultTabId, 0, "name", { value: "unsaved" }); });
+  const resultTab = screen.getByRole("tab", { name: "Result 1" });
+  const refresh = () => fireEvent.keyDown(resultTab, { key: "r", code: "KeyR", metaKey: true });
+
+  await act(async () => { refresh(); });
+  // Behind the open dialog the key must neither stack a second dialog nor reload the webview.
+  const behindDialog = new KeyboardEvent("keydown", { key: "r", code: "KeyR", metaKey: true, bubbles: true, cancelable: true });
+  await act(async () => { fireEvent(resultTab, behindDialog); });
+  expect(behindDialog.defaultPrevented).toBe(true);
+  expect(document.querySelectorAll("dialog").length).toBe(1);
+  await answerConfirm("취소");
+  expect(ipc.queryExecute).toHaveBeenCalledTimes(1);
+  expect(editStore.getSnapshot(resultTabId).pendingCount).toBe(1);
+
+  await act(async () => { refresh(); });
+  await answerConfirm("확인");
+  expect(ipc.queryExecute).toHaveBeenCalledTimes(2);
+  expect(editStore.getSnapshot(resultTabId).pendingCount).toBe(0);
+  expect(screen.queryByRole("alert")).toBeNull();
+
+  // A cell still being typed into is a change the edit store has not seen yet.
+  const cellEditor = document.createElement("input");
+  cellEditor.setAttribute("aria-label", "셀 편집");
+  document.body.append(cellEditor);
+  await act(async () => { refresh(); });
+  await answerConfirm("취소");
+  expect(ipc.queryExecute).toHaveBeenCalledTimes(2);
+  cellEditor.remove();
+
+  // A commit in flight owns the rows; refreshing has to wait it out.
+  act(() => { editStore.setLocked(resultTabId, true); });
+  await act(async () => { refresh(); });
+  expect(ipc.queryExecute).toHaveBeenCalledTimes(2);
+  expect(screen.getByRole("alert").textContent).toContain("저장하는 중에는 새로고침할 수 없습니다");
+  act(() => { editStore.setLocked(resultTabId, false); });
 });

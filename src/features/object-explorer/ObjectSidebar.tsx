@@ -2,6 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { DatabaseObjectSummary } from "../../generated/ipc-types";
 import { ipc } from "../../shared/ipc/invoke";
+import { confirmDialog } from "../../shared/ui/prompt";
 
 const KIND_ICON: Record<string, string> = {
   table: "▦",
@@ -275,7 +276,7 @@ export function ObjectSidebar({ connectionId, database, changingDatabase, readOn
     if (!object || readOnly || deletingOid !== null) return;
     const signature = object.kind === "function" ? `(${object.functionArguments ?? ""})` : "";
     const label = `${object.schema}.${object.name}${signature}`;
-    if (!window.confirm(`${label}을(를) 삭제할까요?\n\n이 작업은 되돌릴 수 없습니다. 종속 객체가 있으면 삭제되지 않습니다.`)) return;
+    if (!(await confirmDialog(`${label}을(를) 삭제할까요?\n\n이 작업은 되돌릴 수 없습니다. 종속 객체가 있으면 삭제되지 않습니다.`))) return;
     setContextMenu(null);
     setDeletingOid(object.oid);
     try {

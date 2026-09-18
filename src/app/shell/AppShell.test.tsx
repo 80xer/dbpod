@@ -4,14 +4,18 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { AppShell } from "./AppShell";
 import { emptyWorkspace, workspaceReducer, workspaceStates } from "../../entities/workspace/workspaceStore";
 import { editStore } from "../../entities/result/editStore";
-const mock = vi.hoisted(() => ({ handler: undefined as undefined | ((event: { preventDefault: () => void }) => Promise<void>), save: vi.fn(), close: vi.fn(), destroy: vi.fn() }));
+import { openConnections } from "../../entities/connection/openConnections";
+import type { ConnectionProfile } from "../../generated/ipc-types";
+const mock = vi.hoisted(() => ({ handler: undefined as undefined | ((event: { preventDefault: () => void }) => Promise<void>), save: vi.fn(), close: vi.fn(), destroy: vi.fn(), navigate: vi.fn(), params: {} as { connectionId?: string } }));
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ onCloseRequested: async (handler: typeof mock.handler) => { mock.handler = handler; return () => {}; }, destroy: mock.destroy }) }));
-vi.mock("@tanstack/react-router", () => ({ Link: () => null, Outlet: () => null, useParams: () => ({}) }));
+vi.mock("@tanstack/react-router", () => ({ Link: () => null, Outlet: () => null, useParams: () => mock.params, useNavigate: () => mock.navigate }));
 vi.mock("../../shared/ipc/invoke", () => ({ ipc: { connectionClose: mock.close } }));
 vi.mock("../../entities/workspace/persistence", () => ({ getPersistenceError: () => "", subscribePersistence: () => () => {}, saveWorkspaceNow: mock.save }));
 beforeEach(() => {
   vi.clearAllMocks(); Object.defineProperty(window, "__TAURI_INTERNALS__", { value: {}, configurable: true });
   workspaceStates.clear(); editStore.clear("r");
+  mock.params = {};
+  for (const [id] of openConnections.entries()) openConnections.delete(id);
   workspaceStates.set("c", workspaceReducer(workspaceReducer(emptyWorkspace(), { type: "TAB_ADDED", tabId: "t" }), { type: "RESULT_ADDED", tabId: "t", resultTabId: "r" }));
   mock.save.mockResolvedValue(undefined); mock.close.mockResolvedValue(undefined); mock.destroy.mockResolvedValue(undefined);
 });
@@ -62,4 +66,74 @@ test("blocks Backspace navigation outside editable fields while preserving text 
   expect(closeWindow.defaultPrevented).toBe(true);
   cleanup();
   expect(backspace(document.body)).toBe(false);
+});
+
+const profile = (name: string): ConnectionProfile => ({
+  id: `p-${name}`, name, environment: "dev", color: null, host: "localhost", port: 5432,
+  database: "dbpod", username: "tester", tlsMode: "insecure", readOnly: false,
+  queryTimeoutMs: 1000, maxRows: 100, hasStoredCredential: false,
+});
+
+test("the connection keys step through the rail in order and wrap at both ends", () => {
+  for (const id of ["a", "b", "c"]) openConnections.set(id, profile(id.toUpperCase()));
+  const press = (key: string) => {
+    const event = new KeyboardEvent("keydown", { key, code: key, metaKey: true, shiftKey: true, bubbles: true, cancelable: true });
+    fireEvent(document.body, event);
+    return { event, target: mock.navigate.mock.lastCall?.[0]?.params?.connectionId };
+  };
+  // From home, each direction enters the list at the end it points at.
+  render(<AppShell />);
+  expect(press("ArrowDown").target).toBe("a");
+  expect(press("ArrowUp").target).toBe("c");
+  cleanup();
+
+  mock.params = { connectionId: "c" };
+  render(<AppShell />);
+  expect(press("ArrowUp").target).toBe("b");
+  const wrapped = press("ArrowDown");
+  expect(wrapped.target).toBe("a");
+  // The editor never sees the keystroke, so its own binding cannot fire as well.
+  expect(wrapped.event.defaultPrevented).toBe(true);
+
+  // A key captured by the settings recorder belongs to the recorder, not the rail.
+  mock.navigate.mockClear();
+  const recorder = document.createElement("button");
+  recorder.setAttribute("aria-label", "다음 연결 단축키");
+  document.body.append(recorder);
+  recorder.focus();
+  press("ArrowDown");
+  expect(mock.navigate).not.toHaveBeenCalled();
+  recorder.remove();
+});
+
+test("the connection keys stay inert with nothing open", () => {
+  render(<AppShell />);
+  const event = new KeyboardEvent("keydown", { key: "ArrowDown", code: "ArrowDown", metaKey: true, shiftKey: true, bubbles: true, cancelable: true });
+  fireEvent(document.body, event);
+  expect(mock.navigate).not.toHaveBeenCalled();
+  expect(event.defaultPrevented).toBe(false);
+});
+
+test("a close request with unsaved edits asks once, even when the OS repeats it, and 취소 keeps the window", async () => {
+  HTMLDialogElement.prototype.showModal = function () { this.open = true; };
+  HTMLDialogElement.prototype.close = function () { this.open = false; this.dispatchEvent(new Event("close")); };
+  editStore.setCell("r", 0, "name", { value: "unsaved" });
+  render(<AppShell />);
+  await act(async () => {
+    void mock.handler?.({ preventDefault: vi.fn() });
+    void mock.handler?.({ preventDefault: vi.fn() });
+  });
+  const dialogs = document.querySelectorAll("dialog");
+  expect(dialogs).toHaveLength(1);
+  expect(dialogs[0].textContent).toContain("종료할까요?");
+  await act(async () => { [...dialogs[0].querySelectorAll("button")].find((b) => b.textContent === "취소")!.click(); });
+  expect(mock.save).not.toHaveBeenCalled();
+  expect(mock.destroy).not.toHaveBeenCalled();
+
+  // Declining released the attempt: the next request asks again and 확인 goes through.
+  await act(async () => { void mock.handler?.({ preventDefault: vi.fn() }); });
+  const again = document.querySelector("dialog")!;
+  await act(async () => { [...again.querySelectorAll("button")].find((b) => b.textContent === "확인")!.click(); });
+  expect(mock.destroy).toHaveBeenCalled();
+  document.querySelectorAll("dialog").forEach((dialog) => dialog.remove());
 });

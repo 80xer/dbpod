@@ -248,6 +248,12 @@ export function resultIds(tab: QueryTabState): string[] {
 /** SQL drafts live outside React state — CodeMirror is the source of truth. */
 export const sqlDrafts = new Map<string, string>();
 
+/**
+ * tabId -> caret, kept so leaving a connection and coming back lands where the
+ * editing stopped. Memory only, like the editor views it outlives.
+ */
+export const sqlSelections = new Map<string, { anchor: number; head: number }>();
+
 /** tabId -> saved query this tab edits, so saving overwrites instead of asking. */
 export const savedQueryIds = new Map<string, string>();
 

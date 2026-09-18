@@ -23,10 +23,13 @@ export const shortcutDefinitions = [
   { id: "selectGridRow", label: "그리드 행 전체 선택", defaultValue: "Shift+Space", group: "결과 그리드" },
   { id: "selectAllGrid", label: "그리드 전체 선택", defaultValue: "Mod+KeyA", group: "결과 그리드" },
   { id: "copyGrid", label: "그리드 선택 영역 복사", defaultValue: "Mod+KeyC", group: "결과 그리드" },
+  { id: "refreshResult", label: "결과 새로고침", defaultValue: "Mod+KeyR", group: "결과 그리드" },
   { id: "toggleAi", label: "AI 패널 열기/닫기", defaultValue: "Mod+Shift+KeyI", group: "AI" },
   // The AI input never sees the editor's keys, so it keeps its own key space:
   // Mod+Enter sends here and runs the query there without either shadowing the other.
   { id: "aiSend", label: "AI 메시지 전송", defaultValue: "Mod+Enter", scope: "ai", group: "AI" },
+  { id: "previousConnection", label: "이전 연결", defaultValue: "Mod+Shift+ArrowUp", group: "앱" },
+  { id: "nextConnection", label: "다음 연결", defaultValue: "Mod+Shift+ArrowDown", group: "앱" },
   { id: "openSettings", label: "설정 열기", defaultValue: "Mod+Comma", group: "앱" },
 ] as const;
 

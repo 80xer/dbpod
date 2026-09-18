@@ -5,6 +5,7 @@ import type { ChangesPreviewResponse, RowConflict } from "../../generated/ipc-ty
 import { ipc } from "../../shared/ipc/invoke";
 import type { Editability, EditableInfo } from "./editability";
 import { applyServerValues, buildRowChanges, commitChangeSet } from "./saveChanges";
+import { confirmDialog } from "../../shared/ui/prompt";
 
 function Dialog({ children, onCancel }: { children: React.ReactNode; onCancel: () => void }) {
   const ref = useRef<HTMLDialogElement>(null);
@@ -87,7 +88,7 @@ export function EditBar({
     if (!preview || committing.current) return;
     if (
       preview.counts.delete >= 10 &&
-      !window.confirm(`${preview.counts.delete}개 행을 삭제합니다. 계속할까요?`)
+      !(await confirmDialog(`${preview.counts.delete}개 행을 삭제합니다. 계속할까요?`))
     )
       return;
     committing.current = true;
@@ -138,6 +139,8 @@ export function EditBar({
         <div className="ml-auto flex gap-2">
           <button
             type="button"
+            // The save key inside a result presses this button, disabled state and all.
+            data-save-edits=""
             disabled={edits.pendingCount === 0 || busy}
             onClick={() => void openPreview()}
             className="rounded bg-green-600 px-3 py-0.5 text-white hover:bg-green-700 disabled:opacity-40"
@@ -147,9 +150,9 @@ export function EditBar({
           <button
             type="button"
             disabled={edits.pendingCount === 0 || busy}
-            onClick={() => {
-              if (window.confirm("대기 중인 변경을 모두 취소할까요?")) editStore.clear(resultTabId);
-            }}
+            onClick={() => void confirmDialog("대기 중인 변경을 모두 취소할까요?").then((ok) => {
+              if (ok) editStore.clear(resultTabId);
+            })}
             className="rounded border border-gray-300 px-3 py-0.5 text-gray-600 hover:bg-gray-100 disabled:opacity-40"
           >
             변경 취소

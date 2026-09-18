@@ -13,6 +13,7 @@ import {
 import { ipc } from "../../shared/ipc/invoke";
 import { runTableData } from "../../shared/ipc/queryChannel";
 import { ResultGrid } from "../result-grid/ResultGrid";
+import { confirmDialog } from "../../shared/ui/prompt";
 
 const PAGE_SIZE = 200;
 
@@ -47,7 +48,7 @@ export function TableDataView({ connectionId, tab, readOnly, onModeChange }: Pro
     async (next: ViewState) => {
       if (!target || resultStore.getSnapshot(resultTabId).status === "running" || editStore.getSnapshot(resultTabId).locked) return;
       if (editStore.getSnapshot(resultTabId).pendingCount > 0) {
-        if (!window.confirm("저장하지 않은 변경이 있습니다. 버리고 새로 조회할까요?")) return;
+        if (!(await confirmDialog("저장하지 않은 변경이 있습니다. 버리고 새로 조회할까요?"))) return;
       }
       editStore.clear(resultTabId);
       tableDataViews.set(tab.id, next);
@@ -102,7 +103,7 @@ export function TableDataView({ connectionId, tab, readOnly, onModeChange }: Pro
   const dataMode = tab.tableDataMode === "properties" ? "properties" : "data";
 
   return (
-      <div className="flex h-full min-h-0 flex-col">
+      <div data-result-area="" className="flex h-full min-h-0 flex-col">
       <div className="flex shrink-0 items-center border-b border-gray-200 bg-gray-50">
         <div className="flex items-center gap-2 px-3 py-1">
           <span className="text-xs font-medium">

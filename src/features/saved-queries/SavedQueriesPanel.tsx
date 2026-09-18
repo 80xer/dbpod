@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { savedQueryStore, useSavedQueries } from "../../entities/query/savedQueryStore";
 import type { SavedQuery } from "../../generated/ipc-types";
-import { promptText } from "../../shared/ui/prompt";
+import { confirmDialog, promptText } from "../../shared/ui/prompt";
 
 type Props = {
   /** Saving lives in the workspace, which owns the tab the query belongs to. */
@@ -92,10 +92,9 @@ export function SavedQueriesPanel({ onSaveCurrent, saveShortcut, onOpen, onClose
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  if (window.confirm(`"${e.name}"을(를) 삭제할까요?`))
-                    attempt(() => savedQueryStore.remove(e.id));
-                }}
+                onClick={() => void confirmDialog(`"${e.name}"을(를) 삭제할까요?`).then((ok) => {
+                  if (ok) attempt(() => savedQueryStore.remove(e.id));
+                })}
                 className="hidden rounded px-1 hover:text-red-600 group-hover:inline"
               >
                 삭제

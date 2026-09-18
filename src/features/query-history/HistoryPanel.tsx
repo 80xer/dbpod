@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { historyStore, useHistory } from "../../entities/query/historyStore";
+import { confirmDialog } from "../../shared/ui/prompt";
 
 type Props = {
   connectionId: string;
@@ -70,10 +71,9 @@ export function HistoryPanel({ connectionId, onReopen, onClose }: Props) {
       <div className="shrink-0 border-t border-gray-200 px-2 py-1.5">
         <button
           type="button"
-          onClick={() => {
-            if (window.confirm("이 연결의 쿼리 이력을 모두 삭제할까요?"))
-              historyStore.clear(connectionId);
-          }}
+          onClick={() => void confirmDialog("이 연결의 쿼리 이력을 모두 삭제할까요?").then((ok) => {
+            if (ok) historyStore.clear(connectionId);
+          })}
           className="text-xs text-gray-500 hover:text-red-600"
         >
           전체 삭제

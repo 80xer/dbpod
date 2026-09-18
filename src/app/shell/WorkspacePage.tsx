@@ -14,6 +14,7 @@ import {
   getTabGroups,
   savedQueryIds,
   sqlDrafts,
+  sqlSelections,
   dispatchWorkspace,
   subscribeWorkspace,
   resultIds,
@@ -33,7 +34,7 @@ import {
   stripLiterals,
 } from "../../features/query-editor/statementSplitter";
 import { ipc } from "../../shared/ipc/invoke";
-import { promptText } from "../../shared/ui/prompt";
+import { confirmDialog, promptText } from "../../shared/ui/prompt";
 import { runQuery } from "../../shared/ipc/queryChannel";
 import { getAppSettings } from "../../entities/settings/appSettings";
 import { displayShortcut, shortcutDigit, shortcutMatches, type ShortcutId } from "../../entities/settings/shortcuts";
@@ -88,18 +89,26 @@ function WorkspaceContent({ connectionId }: { connectionId: string }) {
   const focusEditor = useRef<string | null>(null);
   const closeActiveTabRef = useRef<() => void>(() => undefined);
   const saveCurrentQueryRef = useRef<() => Promise<void>>(async () => undefined);
+  const refreshResultRef = useRef<() => Promise<void>>(async () => undefined);
 
   const activeTab = state.tabs.find((t) => t.id === state.activeTabId);
   const running = Boolean(activeTab?.runningExecutionId);
-  const dispatchAndFocusEditor = useCallback((action: Parameters<typeof dispatch>[0]) => {
-    dispatch(action);
-    focusEditor.current = workspaceStates.get(connectionId)?.activeTabId ?? null;
+  const focusActiveEditor = useCallback(() => {
+    const workspace = workspaceStates.get(connectionId);
+    // A workspace restored without an active tab starts at the first one.
+    focusEditor.current = workspace?.activeTabId ?? workspace?.tabs[0]?.id ?? null;
     const view = editorViews.current.get(focusEditor.current ?? "");
     if (view) {
       focusEditor.current = null;
       view.focus();
     }
-  }, [connectionId, dispatch]);
+  }, [connectionId]);
+  // Re-entering a connection puts the caret back in the pane and tab it left from.
+  useEffect(focusActiveEditor, [focusActiveEditor]);
+  const dispatchAndFocusEditor = useCallback((action: Parameters<typeof dispatch>[0]) => {
+    dispatch(action);
+    focusActiveEditor();
+  }, [dispatch, focusActiveEditor]);
   const openSqlInNewTab = useCallback((sql: string, title?: string, savedQueryId?: string) => {
     const tabId = crypto.randomUUID();
     sqlDrafts.set(tabId, sql);
@@ -122,7 +131,7 @@ function WorkspaceContent({ connectionId }: { connectionId: string }) {
       name = (await promptText("저장할 이름", tab.title))?.trim();
       if (!name) return;
       const clash = savedQueryStore.find(name);
-      if (clash && !window.confirm(`"${clash.name}"을(를) 덮어쓸까요?`)) return;
+      if (clash && !(await confirmDialog(`"${clash.name}"을(를) 덮어쓸까요?`))) return;
     }
     try {
       const saved = await savedQueryStore.save(name, sql);
@@ -155,6 +164,12 @@ function WorkspaceContent({ connectionId }: { connectionId: string }) {
       if (changingDatabase || e.isComposing) return;
       const shortcuts = getAppSettings().shortcuts;
       const matches = (id: ShortcutId) => shortcutMatches(e, shortcuts[id]);
+      // A modal dialog owns the keyboard; a shortcut behind it would stack a second one.
+      // The keys whose browser default is destructive (reload, save page) stay swallowed.
+      if (document.querySelector("dialog[open]")) {
+        if (matches("refreshResult") || matches("saveQuery")) e.preventDefault();
+        return;
+      }
       let action: Parameters<typeof dispatch>[0] | null = null;
       if (matches("splitPanel")) {
         e.preventDefault();
@@ -171,7 +186,21 @@ function WorkspaceContent({ connectionId }: { connectionId: string }) {
       if (matches("saveQuery")) {
         e.preventDefault();
         e.stopPropagation();
-        if (!e.repeat) void saveCurrentQueryRef.current();
+        if (e.repeat) return;
+        // Inside a result, saving means committing its pending edits. The edit bar's
+        // button already carries the rules for that, so the key just presses it.
+        const saveEdits = (e.target as Element | null)?.closest?.("[data-result-area]")
+          ?.querySelector<HTMLButtonElement>("[data-save-edits]");
+        if (saveEdits) saveEdits.click();
+        else void saveCurrentQueryRef.current();
+        return;
+      }
+      if (matches("refreshResult")) {
+        // Swallowed whatever the focus is: the browser default reloads the webview,
+        // which drops every open connection along with it.
+        e.preventDefault();
+        e.stopPropagation();
+        if (!e.repeat && (e.target as Element | null)?.closest?.("[data-result-area]")) void refreshResultRef.current();
         return;
       }
       if (matches("previousPanel")) action = { type: "PANEL_CYCLED", direction: -1 };
@@ -201,6 +230,16 @@ function WorkspaceContent({ connectionId }: { connectionId: string }) {
     return statementAt(view.state.doc.toString(), from)?.sql ?? null;
   };
 
+  /** Accident-prevention UX, not a security boundary (that's the DB role). */
+  const confirmSql = async (sql: string): Promise<boolean> => {
+    const keyword = firstKeyword(sql);
+    if (keyword === "DROP" || keyword === "TRUNCATE")
+      return confirmDialog(`${keyword} 문을 실행하려고 합니다. 계속할까요?\n\n${sql.slice(0, 200)}`);
+    if ((keyword === "DELETE" || keyword === "UPDATE") && !/\bWHERE\b/i.test(stripLiterals(sql)))
+      return confirmDialog(`WHERE 절이 없는 ${keyword} 문입니다. 전체 행에 적용될 수 있습니다. 계속할까요?`);
+    return true;
+  };
+
   const run = async (mode: "replace" | "new-result", tab = activeTab) => {
     if (changingDatabase || !tab || tab.kind !== "query" || tab.runningExecutionId) return;
     const sql = pickSql(tab.id);
@@ -208,22 +247,7 @@ function WorkspaceContent({ connectionId }: { connectionId: string }) {
       setNotice("실행할 SQL이 없습니다.");
       return;
     }
-    // Accident-prevention UX, not a security boundary (that's the DB role).
-    const keyword = firstKeyword(sql);
-    if (keyword === "DROP" || keyword === "TRUNCATE") {
-      if (!window.confirm(`${keyword} 문을 실행하려고 합니다. 계속할까요?\n\n${sql.slice(0, 200)}`))
-        return;
-    } else if (
-      (keyword === "DELETE" || keyword === "UPDATE") &&
-      !/\bWHERE\b/i.test(stripLiterals(sql))
-    ) {
-      if (
-        !window.confirm(
-          `WHERE 절이 없는 ${keyword} 문입니다. 전체 행에 적용될 수 있습니다. 계속할까요?`,
-        )
-      )
-        return;
-    }
+    if (!(await confirmSql(sql))) return;
     setNotice("");
 
     const active = tab.resultTabs.find((r) => r.id === tab.activeResultTabId);
@@ -248,6 +272,44 @@ function WorkspaceContent({ connectionId }: { connectionId: string }) {
     }
   };
 
+  /** Re-runs the SQL that filled the active Result Tab, over that same result. */
+  const refreshResultTab = async (tab = activeTab) => {
+    if (changingDatabase || !tab || tab.kind !== "query" || tab.runningExecutionId) return;
+    const resultTabId = tab.activeResultTabId;
+    const sql = resultTabId ? resultStore.getSnapshot(resultTabId).executedSql : undefined;
+    if (!resultTabId || !sql) {
+      setNotice("새로고침할 결과가 없습니다.");
+      return;
+    }
+    if (!(await confirmSql(sql))) return;
+    const edits = editStore.getSnapshot(resultTabId);
+    if (edits.locked) {
+      setNotice("변경 사항을 저장하는 중에는 새로고침할 수 없습니다.");
+      return;
+    }
+    // Re-running replaces the rows the edits are anchored to, so they cannot survive it.
+    // An open cell editor holds a change the store has not been told about yet.
+    if (edits.pendingCount > 0 || document.querySelector('[aria-label="셀 편집"]')) {
+      if (!(await confirmDialog("저장하지 않은 변경이 있습니다. 버리고 새로 조회할까요?"))) return;
+      editStore.clear(resultTabId);
+    }
+    setNotice("");
+    try {
+      await runQuery({
+        connectionId,
+        queryTabId: tab.id,
+        resultTabId,
+        sql,
+        maxRows: 0,
+        timeoutMs: profile.queryTimeoutMs || 60_000,
+      });
+    } catch (e) {
+      const err = e as { message?: string };
+      setNotice(err?.message ?? String(e));
+    }
+  };
+  refreshResultRef.current = refreshResultTab;
+
   const cancel = (tab = activeTab) => {
     if (tab?.runningExecutionId && !tab.runningExecutionId.startsWith("pending:"))
       void ipc.queryCancel({ executionId: tab.runningExecutionId }).catch((e: unknown) => setNotice((e as { message?: string }).message ?? String(e)));
@@ -261,7 +323,7 @@ function WorkspaceContent({ connectionId }: { connectionId: string }) {
       return;
     }
     if (state.tabs.some((t) => resultIds(t).some((id) => editStore.getSnapshot(id).pendingCount))
-      && !window.confirm("DB를 변경하면 현재 조회 결과와 저장하지 않은 편집을 닫습니다. SQL 초안은 보관합니다. 계속할까요?")) return;
+      && !(await confirmDialog("DB를 변경하면 현재 조회 결과와 저장하지 않은 편집을 닫습니다. SQL 초안은 보관합니다. 계속할까요?"))) return;
     setChangingDatabase(true);
     setNotice("");
     try {
@@ -302,7 +364,7 @@ function WorkspaceContent({ connectionId }: { connectionId: string }) {
         showError(e);
         return;
       }
-      if (!window.confirm("연결이 끊어졌습니다. 다시 연결할까요?\n\n조회 결과와 저장하지 않은 편집을 닫습니다. SQL 초안은 보관합니다.")) {
+      if (!(await confirmDialog("연결이 끊어졌습니다. 다시 연결할까요?\n\n조회 결과와 저장하지 않은 편집을 닫습니다. SQL 초안은 보관합니다."))) {
         setNotice("연결이 끊어졌습니다. 새로고침으로 다시 연결할 수 있습니다.");
         return;
       }
@@ -324,25 +386,26 @@ function WorkspaceContent({ connectionId }: { connectionId: string }) {
     }
   };
 
-  const protectedTabs = (tabs: QueryTabState[]): boolean => {
+  const protectedTabs = async (tabs: QueryTabState[]): Promise<boolean> => {
     if (tabs.some((t) => t.runningExecutionId?.startsWith("pending:")) || tabs.some((t) => resultIds(t).some((id) => editStore.getSnapshot(id).locked))) {
       setNotice("실행 준비 또는 저장 중입니다. 완료 후 닫아 주세요.");
       return true;
     }
     const dirty = tabs.some((t) => resultIds(t).some((id) => editStore.getSnapshot(id).pendingCount));
     const active = tabs.some((t) => t.runningExecutionId || (t.transactionState && t.transactionState !== "idle"));
-    return (dirty || active) && !window.confirm("저장하지 않은 편집은 버리고, 실행 중인 쿼리는 취소하며 열린 트랜잭션은 롤백합니다. 계속할까요?");
+    return (dirty || active) && !(await confirmDialog("저장하지 않은 편집은 버리고, 실행 중인 쿼리는 취소하며 열린 트랜잭션은 롤백합니다. 계속할까요?"));
   };
   const disposeTab = (tab: QueryTabState) => {
     for (const id of resultIds(tab)) resultStore.dispose(id);
     tableDataViews.delete(tab.id);
     sqlDrafts.delete(tab.id);
+    sqlSelections.delete(tab.id);
   };
   const closeResultTab = async (tab: QueryTabState, resultTabId: string) => {
     const r = tab.resultTabs.find((x) => x.id === resultTabId);
     const edits = editStore.getSnapshot(resultTabId);
     if (!r || r.isRunning || edits.locked) return;
-    if ((r.isPinned || edits.pendingCount) && !window.confirm(`'${r.title}' 결과와 저장하지 않은 편집을 닫을까요?`)) return;
+    if ((r.isPinned || edits.pendingCount) && !(await confirmDialog(`'${r.title}' 결과와 저장하지 않은 편집을 닫을까요?`))) return;
     try {
       await ipc.resultRelease({ resultTabId });
       resultStore.dispose(resultTabId);
@@ -351,7 +414,7 @@ function WorkspaceContent({ connectionId }: { connectionId: string }) {
   };
 
   const closeQueryTabs = async (tabs: QueryTabState[]) => {
-    if (protectedTabs(tabs)) return;
+    if (await protectedTabs(tabs)) return;
     try {
       for (const tab of tabs) {
         if (tab.sessionId) await ipc.querySessionClose({ sessionId: tab.sessionId, rollbackOpenTransaction: true });
@@ -370,7 +433,7 @@ function WorkspaceContent({ connectionId }: { connectionId: string }) {
   };
 
   const disconnect = async () => {
-    if (protectedTabs(state.tabs)) return;
+    if (await protectedTabs(state.tabs)) return;
     try {
       // Keep drafts available until encrypted persistence and backend cleanup succeed.
       await saveWorkspaceNow();
@@ -598,13 +661,24 @@ function WorkspaceContent({ connectionId }: { connectionId: string }) {
                     onViewReady={(view) => {
                       if (view) {
                         editorViews.current.set(tab.id, view);
+                        const saved = sqlSelections.get(tab.id);
+                        // The draft is restored separately and may be shorter than it was.
+                        if (saved) {
+                          const end = view.state.doc.length;
+                          view.dispatch({ selection: { anchor: Math.min(saved.anchor, end), head: Math.min(saved.head, end) }, scrollIntoView: true });
+                        }
                         if (focusEditor.current === tab.id) {
                           focusEditor.current = null;
                           view.focus();
                         }
                       } else {
-                        // StrictMode recreates the focused editor during development.
-                        if (editorViews.current.get(tab.id)?.hasFocus && workspaceStates.get(connectionId)?.activeTabId === tab.id) focusEditor.current = tab.id;
+                        const previous = editorViews.current.get(tab.id);
+                        if (previous) {
+                          const { anchor, head } = previous.state.selection.main;
+                          sqlSelections.set(tab.id, { anchor, head });
+                          // StrictMode recreates the focused editor during development.
+                          if (previous.hasFocus && workspaceStates.get(connectionId)?.activeTabId === tab.id) focusEditor.current = tab.id;
+                        }
                         editorViews.current.delete(tab.id);
                       }
                     }}

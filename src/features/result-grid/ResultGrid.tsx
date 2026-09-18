@@ -188,8 +188,17 @@ export function ResultGrid({ resultTabId, hiddenColumns, sort, onHeaderClick, ed
     parentRef.current?.focus({ preventScroll: true });
   };
 
-  const commitCell = (rowIndex: number, column: ColumnMeta, v: { mode: string; value?: string }) => {
+  /**
+   * Closing the inline editor unmounts the focused input, which drops focus onto
+   * the body. Keyboard navigation and the grid's own keys need it back.
+   */
+  const stopEditing = () => {
     setEditing(null);
+    parentRef.current?.focus({ preventScroll: true });
+  };
+
+  const commitCell = (rowIndex: number, column: ColumnMeta, v: { mode: string; value?: string }) => {
+    stopEditing();
     const original = cellText(snapshot.rows[rowIndex]?.[column.index]);
     if (v.mode === "null") {
       const wasNull = snapshot.rows[rowIndex]?.[column.index]?.kind === "null";
@@ -268,6 +277,12 @@ export function ResultGrid({ resultTabId, hiddenColumns, sort, onHeaderClick, ed
     if (selection && shortcutMatches(e, shortcuts.selectGridRow)) {
       e.preventDefault();
       selectRow(position.r);
+      return;
+    }
+    // Same toggle as the 선택 행 삭제 button, on the key the rows are under.
+    if (e.key === "Backspace" && edit && fullRowsSelected && !edits.locked) {
+      e.preventDefault();
+      deleteSelectedRows();
       return;
     }
     if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) {
@@ -402,7 +417,7 @@ export function ResultGrid({ resultTabId, hiddenColumns, sort, onHeaderClick, ed
           <CellEditor
             initial={draft ? (draft.value ?? "") : cell?.kind === "null" ? "" : cellText(cell)}
             allowDefault={false}
-            onCancel={() => setEditing(null)}
+            onCancel={stopEditing}
             onCommit={(v) => commitCell(rowIndex, c, v)}
           />
         ) : (
@@ -583,9 +598,9 @@ export function ResultGrid({ resultTabId, hiddenColumns, sort, onHeaderClick, ed
                             <CellEditor
                               initial={cell?.mode === "value" ? cell.value : ""}
                               allowDefault
-                              onCancel={() => setEditing(null)}
+                              onCancel={stopEditing}
                               onCommit={(v) => {
-                                setEditing(null);
+                                stopEditing();
                                 editStore.setInsertCell(
                                   resultTabId,
                                   draft.draftId,

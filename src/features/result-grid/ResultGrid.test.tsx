@@ -49,6 +49,12 @@ test("keyboard navigation edits the focused cell and Escape discards the active 
   const input = screen.getByLabelText("셀 편집"); expect((input as HTMLInputElement).value).toBe("Beta");
   fireEvent.change(input, { target: { value: "changed" } }); fireEvent.keyDown(input, { key: "Escape" });
   expect(editStore.getSnapshot("grid").pendingCount).toBe(0);
+  // Closing the editor unmounts the focused input; the grid has to take focus back,
+  // or keys aimed at the result (save, refresh, navigation) land on the body instead.
+  expect(document.activeElement).toBe(grid);
+  fireEvent.keyDown(grid, { key: "Enter" });
+  fireEvent.keyDown(screen.getByLabelText("셀 편집"), { key: "Enter" });
+  expect(document.activeElement).toBe(grid);
   fireEvent.keyDown(grid, { key: "Enter" });
   const nullButton = screen.getByRole("button", { name: "SQL NULL로 설정" });
   fireEvent.blur(screen.getByLabelText("셀 편집"), { relatedTarget: nullButton });
@@ -89,6 +95,15 @@ test("row headers and Shift+Space select full rows; deletion requires the separa
   expect(resultStore.getSnapshot("grid").rows).toHaveLength(2);
   fireEvent.click(screen.getByRole("button", { name: "선택 행 삭제 취소" }));
   expect(editStore.getSnapshot("grid").deletes.size).toBe(0);
+  // Backspace is the same toggle as the button, and only over whole rows.
+  fireEvent.keyDown(grid, { key: "Backspace" });
+  expect(editStore.getSnapshot("grid").deletes).toEqual(new Set([0]));
+  fireEvent.keyDown(grid, { key: "Backspace" });
+  expect(editStore.getSnapshot("grid").deletes.size).toBe(0);
+  fireEvent.mouseDown(screen.getByText("Alpha"));
+  fireEvent.keyDown(grid, { key: "Backspace" });
+  expect(editStore.getSnapshot("grid").deletes.size).toBe(0);
+  fireEvent.keyDown(grid, { key: " ", code: "Space", shiftKey: true });
   fireEvent.click(screen.getByRole("button", { name: /행 추가/ }));
   fireEvent.click(screen.getByRole("button", { name: "새 1행 선택" }));
   expect(editStore.getSnapshot("grid").inserts).toHaveLength(1);
