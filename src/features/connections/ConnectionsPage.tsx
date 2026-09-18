@@ -14,6 +14,7 @@ import type {
   TlsMode,
 } from "../../generated/ipc-types";
 import { ipc } from "../../shared/ipc/invoke";
+import { confirmDialog } from "../../shared/ui/prompt";
 
 const inputCls =
   "w-full rounded border border-gray-300 px-2 py-1 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500";
@@ -77,6 +78,10 @@ export function ConnectionsPage() {
     void preloadSnapshot();
   }, []);
   const profiles = useQuery({ queryKey: ["profiles"], queryFn: ipc.profileList });
+  // The rail mirrors this list, including a drag that has only been applied optimistically.
+  useEffect(() => {
+    openConnections.setOrder((profiles.data ?? []).map((p) => p.id));
+  }, [profiles.data]);
   const [testResult, setTestResult] = useState<ConnectionTestResult | null>(null);
   const [message, setMessage] = useState<string>("");
   const [editing, setEditing] = useState<ConnectionProfile | null>(null);
@@ -315,10 +320,9 @@ export function ConnectionsPage() {
                   type="button"
                   className="rounded border border-gray-300 px-3 py-1 text-xs text-red-600 hover:bg-red-50"
                   disabled={orderBusy}
-                  onClick={() => {
-                    if (window.confirm(`'${p.name}' 프로필과 저장된 자격 증명을 삭제할까요?`))
-                      remove.mutate(p.id);
-                  }}
+                  onClick={() => void confirmDialog(`'${p.name}' 프로필과 저장된 자격 증명을 삭제할까요?`).then((ok) => {
+                    if (ok) remove.mutate(p.id);
+                  })}
                 >
                   삭제
                 </button>

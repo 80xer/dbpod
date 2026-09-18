@@ -10,7 +10,7 @@ import { ConnectionsPage } from "./ConnectionsPage";
 const { navigate } = vi.hoisted(() => ({ navigate: vi.fn() }));
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => navigate }));
 vi.mock("../../entities/workspace/persistence", () => ({ preloadSnapshot: vi.fn().mockResolvedValue(undefined) }));
-vi.mock("../../entities/connection/openConnections", () => ({ openConnections: { set: vi.fn() }, useOpenConnections: vi.fn(() => []) }));
+vi.mock("../../entities/connection/openConnections", () => ({ openConnections: { set: vi.fn(), setOrder: vi.fn() }, useOpenConnections: vi.fn(() => []) }));
 vi.mock("../../shared/ipc/invoke", () => ({
   ipc: { profileList: vi.fn(), profileReorder: vi.fn(), profileSave: vi.fn(), profileDelete: vi.fn(), connectionTest: vi.fn(), connectionOpen: vi.fn() },
 }));
