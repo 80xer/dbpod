@@ -172,3 +172,83 @@ button[aria-label$="복사"]::before {
 [aria-label="AI 채팅 패널"] .hljs-title,
 [aria-label="AI 채팅 패널"] .hljs-built_in,
 [aria-label="AI 채팅 패널"] .hljs-name { color: #7dd3fc; }
+
+/* Search floats as a compact box over the editor's top-right corner.
+   CodeMirror's own panel is a full-width strip, which in a pane this short
+   costs more of the SQL than the box is worth.
+   Every selector here has to out-rank CodeMirror's own `&light .cm-…` rules,
+   which carry three classes: the app's dark theme never switches the editor to
+   `cm-dark`, so those light rules stay in play and win any closer match. */
+html .cm-editor .cm-panels.cm-panels-top {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: auto;
+  width: max-content;
+  max-width: 100%;
+  border: 1px solid #d1d5db;
+  border-top: 0;
+  border-right: 0;
+  border-bottom-left-radius: 0.375rem;
+  background: #ffffff;
+  color: #1f2937;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 0.12);
+}
+
+html .cm-editor .cm-panel.cm-search {
+  /* The close button is absolutely positioned at the right edge; without a
+     content-sized box there is no longer any slack for it to sit in. */
+  padding: 3px 1.5rem 4px 6px;
+  font-size: 12px;
+}
+html .cm-editor .cm-panel.cm-search input,
+html .cm-editor .cm-panel.cm-search button,
+html .cm-editor .cm-panel.cm-search label { margin: 0.15em 0.4em 0.15em 0; }
+html .cm-editor .cm-panel.cm-search .cm-textfield {
+  width: 9rem;
+  padding: 1px 4px;
+  font-size: 12px;
+  border: 1px solid #d1d5db;
+  background: #ffffff;
+  color: #1f2937;
+}
+html .cm-editor .cm-panel.cm-search .cm-button {
+  padding: 1px 6px;
+  font-size: 12px;
+  background: #f3f4f6;
+  background-image: none;
+  border: 1px solid #d1d5db;
+  color: #1f2937;
+}
+html .cm-editor .cm-panel.cm-search label { font-size: 11px; }
+/* Tailwind's preflight strips the native control down to an empty square, which
+   leaves the three toggles with no visible on/off state. */
+html .cm-editor .cm-panel.cm-search input[type="checkbox"] {
+  appearance: auto;
+  width: 12px;
+  height: 12px;
+  padding: 0;
+  border: 0;
+  background: none;
+  accent-color: #2563eb;
+}
+
+html[data-theme="dark"] .cm-editor .cm-panels.cm-panels-top {
+  background: #1f2937;
+  color: #e5e7eb;
+  border-color: #4b5563;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 0.5);
+}
+html[data-theme="dark"] .cm-editor .cm-panel.cm-search .cm-textfield {
+  background: #111827;
+  color: #f3f4f6;
+  border-color: #4b5563;
+}
+html[data-theme="dark"] .cm-editor .cm-panel.cm-search .cm-button {
+  background: #374151;
+  color: #f3f4f6;
+  border-color: #4b5563;
+}
+html[data-theme="dark"] .cm-editor .cm-searchMatch { background-color: #78350f; }
+html[data-theme="dark"] .cm-editor .cm-searchMatch-selected { background-color: #9a3412; }
+html[data-theme="dark"] .cm-editor .cm-selectionMatch { background-color: #334155; }

@@ -1,15 +1,17 @@
 import { PostgreSQL, sql } from "@codemirror/lang-sql";
 import { autocompletion } from "@codemirror/autocomplete";
 import { indentWithTab } from "@codemirror/commands";
+import { findNext, findPrevious, gotoLine, openSearchPanel, search, selectSelectionMatches } from "@codemirror/search";
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { EditorState, Prec } from "@codemirror/state";
-import { EditorView, keymap, tooltips } from "@codemirror/view";
+import { EditorView, keymap, tooltips, type Command } from "@codemirror/view";
 import { parseMixed, type SyntaxNode } from "@lezer/common";
 import { tags } from "@lezer/highlight";
 import { basicSetup } from "codemirror";
 import { useEffect, useRef } from "react";
 import { getAppSettings } from "../../entities/settings/appSettings";
 import { shortcutToCodeMirror } from "../../entities/settings/shortcuts";
+import { formatSqlInEditor } from "./formatSql";
 import { sqlCompletionSource } from "./sqlCompletion";
 
 const postgresWithRoutineBodies = PostgreSQL.configureLanguage({
@@ -90,12 +92,24 @@ export function SqlEditor({
   useEffect(() => {
     if (!hostRef.current) return;
     const shortcuts = getAppSettings().shortcuts;
+    // basicSetup binds these itself. Ours sit above it, and a rebound entry
+    // leaves an inert binding on the built-in key so the setting tells the truth.
+    const searchBindings: Array<[string, Command, string]> = [
+      [shortcuts.findInEditor, openSearchPanel, "Mod-f"],
+      [shortcuts.findNext, findNext, "Mod-g"],
+      [shortcuts.findPrevious, findPrevious, "Mod-Shift-g"],
+      [shortcuts.gotoLine, gotoLine, "Mod-Alt-g"],
+      [shortcuts.selectMatches, selectSelectionMatches, "Mod-Shift-l"],
+    ];
     const view = new EditorView({
       parent: hostRef.current,
       state: EditorState.create({
         doc: initialSql,
         extensions: [
           basicSetup,
+          // The editor pane is short, so the panel floats over the top-right
+          // corner (see index.css) rather than eating a full-width strip.
+          search({ top: true }),
           sql({ dialect: postgresWithRoutineBodies }),
           ...(connectionId && database ? [autocompletion({ override: [sqlCompletionSource(connectionId, database)], filterStrict: true })] : []),
           // The editor pane clips its overflow, so a completion list opening near
@@ -128,6 +142,10 @@ export function SqlEditor({
                 },
               },
               {
+                key: shortcutToCodeMirror(shortcuts.formatSql),
+                run: (target) => readOnly || formatSqlInEditor(target),
+              },
+              {
                 key: shortcutToCodeMirror(shortcuts.cancelQueryAlternate),
                 run: () => {
                   cancelRef.current?.();
@@ -141,6 +159,12 @@ export function SqlEditor({
                   return true;
                 },
               },
+              ...searchBindings.flatMap(([shortcut, command, builtIn]) => {
+                const key = shortcutToCodeMirror(shortcut);
+                return key === builtIn
+                  ? [{ key, run: command }]
+                  : [{ key, run: command }, { key: builtIn, run: () => true }];
+              }),
               ...(readOnly ? [] : [indentWithTab]),
             ]),
           ),

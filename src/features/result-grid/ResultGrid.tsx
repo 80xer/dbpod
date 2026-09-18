@@ -284,7 +284,7 @@ export function ResultGrid({ resultTabId, hiddenColumns, sort, onHeaderClick, ed
       setSelection({ anchor: e.shiftKey && selection ? selection.anchor : next, focus: next });
       if (next.r < snapshot.rows.length) virtualizer.scrollToIndex(next.r, { align: "auto" });
       parentRef.current?.querySelector(`[data-cell="${next.r}:${next.c}"]`)?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
-    } else if ((e.key === "F2" || e.key === "Enter") && edit?.editableColumns.has(columns[position.c].name) && !edits.locked) {
+    } else if ((shortcutMatches(e, shortcuts.editCell) || e.key === "Enter") && edit?.editableColumns.has(columns[position.c].name) && !edits.locked) {
       e.preventDefault();
       const draft = edits.inserts[position.r - snapshot.rows.length];
       setEditing(draft ? { type: "insert", draftId: draft.draftId, column: columns[position.c].name }

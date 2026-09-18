@@ -1,14 +1,30 @@
 import { useEffect, useState } from "react";
 import { aiModels, appFonts, appFontSizes, resetAppSettings, setAppSettings, useAppSettings, type AiProvider, type AppTheme } from "../../entities/settings/appSettings";
-import { displayShortcut, shortcutDefinitions, shortcutFromEvent, shortcutsConflict, type ShortcutId } from "../../entities/settings/shortcuts";
-import { Link } from "@tanstack/react-router";
+import { displayShortcut, shortcutDefinitions, shortcutFromEvent, shortcutGroups, shortcutMatches, shortcutScope, shortcutsConflict, type ShortcutId } from "../../entities/settings/shortcuts";
+import { useCanGoBack, useNavigate, useRouter } from "@tanstack/react-router";
 
 const selectClass = "mt-1 w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm";
 
 export function SettingsPage() {
   const settings = useAppSettings();
+  const router = useRouter();
+  const canGoBack = useCanGoBack();
+  const navigate = useNavigate();
   const [recording, setRecording] = useState<ShortcutId | null>(null);
   const [shortcutError, setShortcutError] = useState("");
+
+  // Settings is the frontmost view, so the close-tab key closes it.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (recording || !shortcutMatches(event, settings.shortcuts.closeTab)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (canGoBack) router.history.back();
+      else void navigate({ to: "/" });
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [recording, settings.shortcuts.closeTab, canGoBack, router, navigate]);
   useEffect(() => {
     if (!recording) return;
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -16,7 +32,10 @@ export function SettingsPage() {
       event.stopPropagation();
       const shortcut = shortcutFromEvent(event, recording === "tabByNumber");
       if (!shortcut) return;
-      const conflict = shortcutDefinitions.find(({ id }) => id !== recording && shortcutsConflict(settings.shortcuts[id], shortcut));
+      // Two panes that never receive the same keystroke may share a binding.
+      const scope = shortcutScope(recording);
+      const conflict = shortcutDefinitions.find(({ id }) =>
+        id !== recording && shortcutScope(id) === scope && shortcutsConflict(settings.shortcuts[id], shortcut));
       if (conflict) {
         setShortcutError(`이미 '${conflict.label}'에서 사용 중인 단축키입니다.`);
         return;
@@ -33,9 +52,8 @@ export function SettingsPage() {
     <div className="mx-auto max-w-2xl p-6">
       <div className="mb-6 flex items-center justify-between">
         <div>
-          <Link to="/" className="mb-2 inline-block text-sm text-blue-700 hover:underline">← HOME</Link>
           <h2 className="text-lg font-semibold">설정</h2>
-          <p className="mt-1 text-sm text-gray-500">변경 사항은 즉시 적용되고 이 기기에 저장됩니다.</p>
+          <p className="mt-1 text-sm text-gray-500">변경 사항은 즉시 적용되고 이 기기에 저장됩니다. {displayShortcut(settings.shortcuts.closeTab)}로 닫습니다.</p>
         </div>
         <button type="button" onClick={resetAppSettings} className="rounded border border-gray-300 px-3 py-1.5 text-sm hover:bg-gray-50">기본값 복원</button>
       </div>
@@ -94,21 +112,26 @@ export function SettingsPage() {
         <h3 id="shortcuts-heading" className="font-semibold">단축키</h3>
         <p className="mt-1 text-sm text-gray-500">단축키 버튼을 선택한 뒤 사용할 키 조합을 누르세요.</p>
         {shortcutError && <p role="alert" className="mt-2 text-sm text-red-600">{shortcutError}</p>}
-        <div className="mt-4 divide-y divide-gray-200">
-          {shortcutDefinitions.map(({ id, label }) => (
-            <div key={id} className="flex items-center justify-between gap-4 py-2">
-              <span className="text-sm">{label}</span>
-              <button
-                type="button"
-                aria-label={`${label} 단축키`}
-                onClick={() => { setRecording(id); setShortcutError(""); }}
-                className={`min-w-36 rounded border px-3 py-1.5 text-right font-mono text-sm ${recording === id ? "border-blue-500 bg-blue-50 ring-1 ring-blue-500" : "border-gray-300 hover:bg-gray-50"}`}
-              >
-                {recording === id ? "새 단축키 입력…" : displayShortcut(settings.shortcuts[id])}
-              </button>
+        {shortcutGroups.map((group) => (
+          <div key={group} className="mt-4">
+            <h4 className="text-sm font-semibold tracking-wide text-gray-500 uppercase">{group}</h4>
+            <div className="mt-1 divide-y divide-gray-200">
+              {shortcutDefinitions.filter((definition) => definition.group === group).map(({ id, label }) => (
+                <div key={id} className="flex items-center justify-between gap-4 py-2">
+                  <span className="text-sm">{label}</span>
+                  <button
+                    type="button"
+                    aria-label={`${label} 단축키`}
+                    onClick={() => { setRecording(id); setShortcutError(""); }}
+                    className={`min-w-36 rounded border px-3 py-1.5 text-right font-mono text-sm ${recording === id ? "border-blue-500 bg-blue-50 ring-1 ring-blue-500" : "border-gray-300 hover:bg-gray-50"}`}
+                  >
+                    {recording === id ? "새 단축키 입력…" : displayShortcut(settings.shortcuts[id])}
+                  </button>
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
+          </div>
+        ))}
       </section>
     </div>
     </div>

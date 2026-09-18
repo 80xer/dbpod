@@ -1,13 +1,17 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import type { ComponentProps } from "react";
 import { afterEach, expect, test, vi } from "vitest";
 import { resetAppSettings } from "../../entities/settings/appSettings";
 import { SettingsPage } from "./SettingsPage";
 
-vi.mock("@tanstack/react-router", () => ({ Link: ({ children, to, ...props }: ComponentProps<"a"> & { to: string }) => <a href={to} {...props}>{children}</a> }));
+const routerMock = vi.hoisted(() => ({ back: vi.fn(), navigate: vi.fn() }));
+vi.mock("@tanstack/react-router", () => ({
+  useRouter: () => ({ history: { back: routerMock.back } }),
+  useCanGoBack: () => true,
+  useNavigate: () => routerMock.navigate,
+}));
 
-afterEach(() => { cleanup(); resetAppSettings(); });
+afterEach(() => { cleanup(); resetAppSettings(); routerMock.back.mockClear(); });
 
 test("applies and persists appearance settings", () => {
   render(<SettingsPage />);
@@ -33,4 +37,19 @@ test("records custom shortcuts and rejects conflicts", () => {
   fireEvent.click(nextPanel);
   fireEvent.keyDown(nextPanel, { key: "k", code: "KeyK", metaKey: true });
   expect(screen.getByRole("alert").textContent).toContain("패널 분할");
+});
+
+test("the close-tab shortcut leaves settings for the previous screen", () => {
+  render(<SettingsPage />);
+  fireEvent.keyDown(window, { key: "w", code: "KeyW", metaKey: true });
+  expect(routerMock.back).toHaveBeenCalled();
+});
+
+test("while recording, the close-tab shortcut is captured instead of closing", () => {
+  render(<SettingsPage />);
+  const closeTab = screen.getByRole("button", { name: "현재 탭 닫기 단축키" });
+  fireEvent.click(closeTab);
+  fireEvent.keyDown(window, { key: "w", code: "KeyW", metaKey: true, shiftKey: true });
+  expect(routerMock.back).not.toHaveBeenCalled();
+  expect(closeTab.textContent).toMatch(/Shift/);
 });
