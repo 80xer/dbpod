@@ -1,5 +1,6 @@
 import type { WorkspaceSnapshot } from "../../generated/ipc-types";
 import { ipc } from "../../shared/ipc/invoke";
+import { aiSessionStore } from "../ai/aiSessionStore";
 import { openConnections } from "../connection/openConnections";
 import { savedQueryStore } from "../query/savedQueryStore";
 import {
@@ -32,6 +33,7 @@ export function preloadSnapshot(): Promise<void> {
     cache = snapshot;
     loadFailed = false;
     savedQueryStore.hydrate(snapshot?.savedQueries ?? []);
+    aiSessionStore.hydrate(snapshot?.aiSessions ?? []);
   }).catch((error: unknown) => {
     loadFailed = true;
     reportError(error);
@@ -122,7 +124,7 @@ function buildSnapshot(): WorkspaceSnapshot {
       })),
     });
   }
-  return { version: 1, connections: [...byProfile.values()], savedQueries: savedQueryStore.list() };
+  return { version: 1, connections: [...byProfile.values()], savedQueries: savedQueryStore.list(), aiSessions: aiSessionStore.list() };
 }
 
 let timer: ReturnType<typeof setTimeout> | undefined;

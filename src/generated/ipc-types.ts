@@ -146,11 +146,23 @@ export type ConnectionSnapshot = { profileId: string, database: string | null, a
 
 export type SavedQuery = { id: string, name: string, sql: string, updatedAt: string, };
 
+export type AiMessageSnapshot = { role: string, text: string, at: number, };
+
+export type AiSessionSnapshot = { id: string, title: string, provider: string, model: string, 
+/**
+ * The CLI's own handle, so a restored conversation can still be continued.
+ */
+cliSessionId: string | null, updatedAt: string, messages: Array<AiMessageSnapshot>, };
+
 export type WorkspaceSnapshot = { version: number, connections: Array<ConnectionSnapshot>, 
 /**
  * Named SQL snippets, deliberately global: not scoped to a profile or database.
  */
-savedQueries: Array<SavedQuery>, };
+savedQueries: Array<SavedQuery>, 
+/**
+ * AI chat transcripts, newest first. Global like saved queries.
+ */
+aiSessions: Array<AiSessionSnapshot>, };
 
 export type InsertCellDraft = { "mode": "value", value: DbValue, } | { "mode": "null" } | { "mode": "default" };
 

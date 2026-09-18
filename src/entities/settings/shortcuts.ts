@@ -1,26 +1,42 @@
 export const shortcutDefinitions = [
-  { id: "runQuery", label: "현재 SQL 실행", defaultValue: "Mod+Enter" },
-  { id: "runQueryNew", label: "새 Result에서 실행", defaultValue: "Mod+Shift+Enter" },
-  { id: "cancelQuery", label: "실행 취소", defaultValue: "Escape" },
-  { id: "cancelQueryAlternate", label: "실행 취소 (보조)", defaultValue: "Mod+Period" },
-  { id: "splitPanel", label: "패널 분할", defaultValue: "Mod+KeyD" },
-  { id: "closeTab", label: "현재 탭 닫기", defaultValue: "Mod+KeyW" },
-  { id: "saveQuery", label: "현재 쿼리 저장", defaultValue: "Mod+KeyS" },
-  { id: "previousPanel", label: "이전 패널", defaultValue: "Mod+Shift+ArrowLeft" },
-  { id: "nextPanel", label: "다음 패널", defaultValue: "Mod+Shift+ArrowRight" },
-  { id: "previousTab", label: "이전 탭", defaultValue: "Ctrl+Shift+Tab" },
-  { id: "nextTab", label: "다음 탭", defaultValue: "Ctrl+Tab" },
-  { id: "previousTabArrow", label: "이전 탭 (방향키)", defaultValue: "Mod+Alt+ArrowLeft" },
-  { id: "nextTabArrow", label: "다음 탭 (방향키)", defaultValue: "Mod+Alt+ArrowRight" },
-  { id: "tabByNumber", label: "번호로 탭 이동", defaultValue: "Mod+Digit" },
-  { id: "selectGridRow", label: "그리드 행 전체 선택", defaultValue: "Shift+Space" },
-  { id: "selectAllGrid", label: "그리드 전체 선택", defaultValue: "Mod+KeyA" },
-  { id: "copyGrid", label: "그리드 선택 영역 복사", defaultValue: "Mod+KeyC" },
-  { id: "toggleAi", label: "AI 패널 열기/닫기", defaultValue: "Mod+Shift+KeyI" },
-  { id: "openSettings", label: "설정 열기", defaultValue: "Mod+Comma" },
+  { id: "runQuery", label: "현재 SQL 실행", defaultValue: "Mod+Enter", group: "실행" },
+  { id: "runQueryNew", label: "새 Result에서 실행", defaultValue: "Mod+Shift+Enter", group: "실행" },
+  { id: "cancelQuery", label: "실행 취소", defaultValue: "Escape", group: "실행" },
+  { id: "cancelQueryAlternate", label: "실행 취소 (보조)", defaultValue: "Mod+Period", group: "실행" },
+  { id: "saveQuery", label: "현재 쿼리 저장", defaultValue: "Mod+KeyS", group: "편집기" },
+  { id: "formatSql", label: "현재 SQL 포맷", defaultValue: "Mod+Shift+KeyF", group: "편집기" },
+  { id: "findInEditor", label: "찾기", defaultValue: "Mod+KeyF", group: "편집기" },
+  { id: "findNext", label: "다음 찾기", defaultValue: "Mod+KeyG", group: "편집기" },
+  { id: "findPrevious", label: "이전 찾기", defaultValue: "Mod+Shift+KeyG", group: "편집기" },
+  { id: "gotoLine", label: "줄 번호로 이동", defaultValue: "Mod+Alt+KeyG", group: "편집기" },
+  { id: "selectMatches", label: "선택과 같은 내용 모두 선택", defaultValue: "Mod+Shift+KeyL", group: "편집기" },
+  { id: "splitPanel", label: "패널 분할", defaultValue: "Mod+KeyD", group: "탭 · 패널" },
+  { id: "closeTab", label: "현재 탭 닫기", defaultValue: "Mod+KeyW", group: "탭 · 패널" },
+  { id: "previousPanel", label: "이전 패널", defaultValue: "Mod+Shift+ArrowLeft", group: "탭 · 패널" },
+  { id: "nextPanel", label: "다음 패널", defaultValue: "Mod+Shift+ArrowRight", group: "탭 · 패널" },
+  { id: "previousTab", label: "이전 탭", defaultValue: "Ctrl+Shift+Tab", group: "탭 · 패널" },
+  { id: "nextTab", label: "다음 탭", defaultValue: "Ctrl+Tab", group: "탭 · 패널" },
+  { id: "previousTabArrow", label: "이전 탭 (방향키)", defaultValue: "Mod+Alt+ArrowLeft", group: "탭 · 패널" },
+  { id: "nextTabArrow", label: "다음 탭 (방향키)", defaultValue: "Mod+Alt+ArrowRight", group: "탭 · 패널" },
+  { id: "tabByNumber", label: "번호로 탭 이동", defaultValue: "Mod+Digit", group: "탭 · 패널" },
+  { id: "editCell", label: "셀 편집 시작", defaultValue: "F2", group: "결과 그리드" },
+  { id: "selectGridRow", label: "그리드 행 전체 선택", defaultValue: "Shift+Space", group: "결과 그리드" },
+  { id: "selectAllGrid", label: "그리드 전체 선택", defaultValue: "Mod+KeyA", group: "결과 그리드" },
+  { id: "copyGrid", label: "그리드 선택 영역 복사", defaultValue: "Mod+KeyC", group: "결과 그리드" },
+  { id: "toggleAi", label: "AI 패널 열기/닫기", defaultValue: "Mod+Shift+KeyI", group: "AI" },
+  // The AI input never sees the editor's keys, so it keeps its own key space:
+  // Mod+Enter sends here and runs the query there without either shadowing the other.
+  { id: "aiSend", label: "AI 메시지 전송", defaultValue: "Mod+Enter", scope: "ai", group: "AI" },
+  { id: "openSettings", label: "설정 열기", defaultValue: "Mod+Comma", group: "앱" },
 ] as const;
 
 export type ShortcutId = typeof shortcutDefinitions[number]["id"];
+export type ShortcutScope = "app" | "ai";
+export const shortcutGroups = [...new Set(shortcutDefinitions.map((entry) => entry.group))];
+export const shortcutScope = (id: ShortcutId): ShortcutScope => {
+  const definition = shortcutDefinitions.find((entry) => entry.id === id);
+  return definition && "scope" in definition ? definition.scope : "app";
+};
 export type ShortcutSettings = Record<ShortcutId, string>;
 
 export const defaultShortcuts = Object.fromEntries(
@@ -28,7 +44,7 @@ export const defaultShortcuts = Object.fromEntries(
 ) as ShortcutSettings;
 
 const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
-const shortcutKeys = /^(Key[A-Z]|Digit(?:[1-9])?|Enter|Escape|Tab|ArrowLeft|ArrowRight|ArrowUp|ArrowDown|Home|End|Space|Period|Comma)$/;
+const shortcutKeys = /^(Key[A-Z]|Digit(?:[1-9])?|F(?:[1-9]|1[0-2])|Enter|Escape|Tab|ArrowLeft|ArrowRight|ArrowUp|ArrowDown|Home|End|Space|Period|Comma)$/;
 
 export function isValidShortcut(shortcut: unknown): shortcut is string {
   if (typeof shortcut !== "string") return false;
@@ -42,6 +58,7 @@ function eventKey(event: KeyboardEvent | ReactKeyboardEvent, digitPattern = fals
   if (["Meta", "Control", "Alt", "Shift"].includes(event.key)) return null;
   if (/^Digit[1-9]$/.test(event.code)) return digitPattern ? "Digit" : event.code;
   if (/^Key[A-Z]$/.test(event.code)) return event.code;
+  if (/^F([1-9]|1[0-2])$/.test(event.key)) return event.key;
   if (/^[1-9]$/.test(event.key)) return digitPattern ? "Digit" : `Digit${event.key}`;
   if (/^[a-z]$/i.test(event.key)) return `Key${event.key.toUpperCase()}`;
   if (event.code === "Period") return "Period";

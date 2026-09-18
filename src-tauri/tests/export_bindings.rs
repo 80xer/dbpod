@@ -81,6 +81,8 @@ fn export_ipc_types() {
     decl!(TabGroupSnapshot);
     decl!(ConnectionSnapshot);
     decl!(SavedQuery);
+    decl!(AiMessageSnapshot);
+    decl!(AiSessionSnapshot);
     decl!(WorkspaceSnapshot);
     decl!(InsertCellDraft);
     decl!(PrimaryKeyValue);

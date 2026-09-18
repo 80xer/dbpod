@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
-import { isValidShortcut, shortcutFromEvent, shortcutMatches, shortcutsConflict, shortcutToCodeMirror } from "./shortcuts";
+import { defaultShortcuts, isValidShortcut, shortcutFromEvent, shortcutMatches, shortcutScope, shortcutsConflict, shortcutToCodeMirror } from "./shortcuts";
 
 describe("shortcuts", () => {
   it("normalizes editable shortcuts and recognizes panel/tab navigation", () => {
@@ -13,5 +13,30 @@ describe("shortcuts", () => {
     expect(shortcutToCodeMirror("Mod+Shift+Enter")).toBe("Mod-Shift-Enter");
     expect(isValidShortcut("Mod+Alt+ArrowRight")).toBe(true);
     expect(isValidShortcut("broken shortcut")).toBe(false);
+  });
+
+  it("records unmodified function keys", () => {
+    const f2 = new KeyboardEvent("keydown", { key: "F2", code: "F2" });
+    expect(shortcutFromEvent(f2)).toBe("F2");
+    expect(isValidShortcut("F2")).toBe(true);
+    expect(isValidShortcut("F13")).toBe(false);
+    expect(shortcutMatches(f2, defaultShortcuts.editCell)).toBe(true);
+  });
+
+  it("keeps the AI input's key space separate from the editor's", () => {
+    // Both default to Mod+Enter on purpose: neither pane sees the other's keys.
+    expect(defaultShortcuts.aiSend).toBe(defaultShortcuts.runQuery);
+    expect(shortcutScope("aiSend")).toBe("ai");
+    expect(shortcutScope("runQuery")).toBe("app");
+  });
+
+  it("keeps the search defaults on the keys CodeMirror already binds", () => {
+    // SqlEditor only neutralizes a built-in key once these drift apart, so a
+    // default that no longer matches would silently bind search twice.
+    expect(shortcutToCodeMirror(defaultShortcuts.findInEditor)).toBe("Mod-f");
+    expect(shortcutToCodeMirror(defaultShortcuts.findNext)).toBe("Mod-g");
+    expect(shortcutToCodeMirror(defaultShortcuts.findPrevious)).toBe("Mod-Shift-g");
+    expect(shortcutToCodeMirror(defaultShortcuts.gotoLine)).toBe("Mod-Alt-g");
+    expect(shortcutToCodeMirror(defaultShortcuts.selectMatches)).toBe("Mod-Shift-l");
   });
 });

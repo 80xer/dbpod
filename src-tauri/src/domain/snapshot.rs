@@ -11,6 +11,32 @@ pub struct WorkspaceSnapshot {
     /// Named SQL snippets, deliberately global: not scoped to a profile or database.
     #[serde(default)]
     pub saved_queries: Vec<SavedQuery>,
+    /// AI chat transcripts, newest first. Global like saved queries.
+    #[serde(default)]
+    pub ai_sessions: Vec<AiSessionSnapshot>,
+}
+
+/// One AI conversation, kept so a restart does not lose the transcript.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct AiSessionSnapshot {
+    pub id: String,
+    pub title: String,
+    pub provider: String,
+    pub model: String,
+    /// The CLI's own handle, so a restored conversation can still be continued.
+    #[serde(default)]
+    pub cli_session_id: Option<String>,
+    pub updated_at: String,
+    pub messages: Vec<AiMessageSnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct AiMessageSnapshot {
+    pub role: String,
+    pub text: String,
+    pub at: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

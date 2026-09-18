@@ -267,6 +267,7 @@ mod tests {
                 sql: SQL.into(),
                 updated_at: "2026-01-01T00:00:00.000Z".into(),
             }],
+            ai_sessions: vec![],
             connections: vec![ConnectionSnapshot {
                 profile_id: "profile-one".into(),
                 database: None,

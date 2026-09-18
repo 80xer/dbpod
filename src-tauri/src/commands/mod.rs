@@ -79,7 +79,6 @@ pub async fn ai_chat(
     let mut command = Command::new("claude");
     command.args([
         "-p",
-        &request.prompt,
         "--output-format",
         "stream-json",
         "--include-partial-messages",
@@ -101,13 +100,18 @@ pub async fn ai_chat(
             fresh
         }
     };
-    let _ = on_event.send(AiChatEvent::Session { id: session_id });
     command.arg("--allowedTools").args(AI_ALLOWED_TOOLS);
     if request.thinking != "auto" {
         command.args(["--effort", &request.thinking]);
     }
+    // The prompt is a positional argument, so it has to come last, behind the
+    // separator: a prompt opening with a SQL comment reads as an option without it.
+    command.args(["--", &request.prompt]);
     command.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
-    command_execute_with_cancel(state, request_id.clone(), command, on_event).await?;
+    command_execute_with_cancel(state, request_id.clone(), command, on_event.clone()).await?;
+    // A session only exists once the CLI has run; announcing it earlier makes the
+    // next turn resume an id that a failed turn never created.
+    let _ = on_event.send(AiChatEvent::Session { id: session_id });
     Ok(request_id)
 }
 
