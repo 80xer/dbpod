@@ -10,6 +10,7 @@ export const shortcutDefinitions = [
   { id: "findPrevious", label: "이전 찾기", defaultValue: "Mod+Shift+KeyG", group: "편집기" },
   { id: "gotoLine", label: "줄 번호로 이동", defaultValue: "Mod+Alt+KeyG", group: "편집기" },
   { id: "selectMatches", label: "선택과 같은 내용 모두 선택", defaultValue: "Mod+Shift+KeyL", group: "편집기" },
+  { id: "addNextMatch", label: "다음 일치 항목에 커서 추가", defaultValue: "Mod+Shift+KeyD", group: "편집기" },
   { id: "splitPanel", label: "패널 분할", defaultValue: "Mod+KeyD", group: "탭 · 패널" },
   { id: "closeTab", label: "현재 탭 닫기", defaultValue: "Mod+KeyW", group: "탭 · 패널" },
   { id: "previousPanel", label: "이전 패널", defaultValue: "Mod+Shift+ArrowLeft", group: "탭 · 패널" },

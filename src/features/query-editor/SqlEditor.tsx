@@ -1,7 +1,7 @@
 import { PostgreSQL, sql } from "@codemirror/lang-sql";
 import { autocompletion } from "@codemirror/autocomplete";
 import { indentWithTab } from "@codemirror/commands";
-import { findNext, findPrevious, gotoLine, openSearchPanel, search, selectSelectionMatches } from "@codemirror/search";
+import { findNext, findPrevious, gotoLine, openSearchPanel, search, selectNextOccurrence, selectSelectionMatches } from "@codemirror/search";
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { EditorState, Prec } from "@codemirror/state";
 import { EditorView, keymap, tooltips, type Command } from "@codemirror/view";
@@ -100,6 +100,9 @@ export function SqlEditor({
       [shortcuts.findPrevious, findPrevious, "Mod-Shift-g"],
       [shortcuts.gotoLine, gotoLine, "Mod-Alt-g"],
       [shortcuts.selectMatches, selectSelectionMatches, "Mod-Shift-l"],
+      // Each press adds the next occurrence as another cursor; typing then edits every one.
+      // basicSetup already allows multiple selections and draws them.
+      [shortcuts.addNextMatch, selectNextOccurrence, "Mod-d"],
     ];
     const view = new EditorView({
       parent: hostRef.current,

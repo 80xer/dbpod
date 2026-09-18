@@ -147,6 +147,24 @@ it("uses Tab and Shift+Tab for editor indentation without moving focus", () => {
   expect(view.state.doc.toString()).toBe("SELECT 1;");
 });
 
+it("adds the next occurrence as another cursor on Cmd+Shift+D, and typing edits every cursor", () => {
+  let view!: EditorView;
+  render(<SqlEditor initialSql="SELECT id, id FROM t WHERE id = 1;" onViewReady={(next) => { if (next) view = next; }} />);
+  const content = screen.getByLabelText("SQL 편집기");
+  content.focus();
+  view.dispatch({ selection: { anchor: 7, head: 9 } });
+  // Shift+letter arrives as the upper-case key plus the base keyCode, which is how
+  // CodeMirror tells "Mod-Shift-d" apart from the inert "Mod-d" underneath it.
+  const addNext = () => fireEvent.keyDown(content, { key: "D", code: "KeyD", keyCode: 68, ctrlKey: true, shiftKey: true });
+  addNext();
+  expect(view.state.selection.ranges.map((r) => view.state.sliceDoc(r.from, r.to))).toEqual(["id", "id"]);
+  addNext();
+  expect(view.state.selection.ranges).toHaveLength(3);
+  view.dispatch(view.state.replaceSelection("pk"));
+  expect(view.state.doc.toString()).toBe("SELECT pk, pk FROM t WHERE pk = 1;");
+  expect(view.state.selection.ranges).toHaveLength(3);
+});
+
 it("renders the completion list outside the editor, which clips its overflow", async () => {
   let view!: EditorView;
   const source = "SELECT  FROM cms.fnn_fy_his;";
