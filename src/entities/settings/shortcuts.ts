@@ -25,6 +25,8 @@ export const shortcutDefinitions = [
   { id: "selectAllGrid", label: "그리드 전체 선택", defaultValue: "Mod+KeyA", group: "결과 그리드" },
   { id: "copyGrid", label: "그리드 선택 영역 복사", defaultValue: "Mod+KeyC", group: "결과 그리드" },
   { id: "refreshResult", label: "결과 새로고침", defaultValue: "Mod+KeyR", group: "결과 그리드" },
+  { id: "previousResult", label: "이전 Result 탭", defaultValue: "Mod+Alt+Shift+ArrowLeft", group: "결과 그리드" },
+  { id: "nextResult", label: "다음 Result 탭", defaultValue: "Mod+Alt+Shift+ArrowRight", group: "결과 그리드" },
   { id: "toggleAi", label: "AI 패널 열기/닫기", defaultValue: "Mod+Shift+KeyI", group: "AI" },
   // The AI input never sees the editor's keys, so it keeps its own key space:
   // Mod+Enter sends here and runs the query there without either shadowing the other.

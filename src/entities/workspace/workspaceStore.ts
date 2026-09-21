@@ -45,6 +45,7 @@ export type WorkspaceAction =
   | { type: "TAB_ACTIVATED"; tabId: string }
   | { type: "TAB_ACTIVATED_BY_INDEX"; index: number }
   | { type: "TAB_CYCLED"; direction: 1 | -1 }
+  | { type: "RESULT_CYCLED"; direction: 1 | -1 }
   | { type: "PANEL_CYCLED"; direction: 1 | -1 }
   | { type: "RESULT_ADDED"; tabId: string; resultTabId: string }
   | { type: "RESULT_CLOSED"; tabId: string; resultTabId: string }
@@ -149,6 +150,13 @@ export function workspaceReducer(state: WorkspaceState, action: WorkspaceAction)
       const idx = tabIds.indexOf(state.activeTabId ?? "");
       const next = (Math.max(0, idx) + action.direction + tabIds.length) % tabIds.length;
       return activateTab(state, tabIds[next]);
+    }
+    case "RESULT_CYCLED": {
+      const tab = state.tabs.find((t) => t.id === state.activeTabId);
+      if (!tab || tab.resultTabs.length < 2) return state;
+      const idx = tab.resultTabs.findIndex((r) => r.id === tab.activeResultTabId);
+      const next = (Math.max(0, idx) + action.direction + tab.resultTabs.length) % tab.resultTabs.length;
+      return updateTab(state, tab.id, (t) => ({ ...t, activeResultTabId: t.resultTabs[next].id }));
     }
     case "PANEL_CYCLED": {
       const groups = getTabGroups(state);

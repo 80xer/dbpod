@@ -179,6 +179,7 @@ type QueryTab = {
 | 이전 탭 | `Ctrl + Shift + Tab` |
 | 다음/이전 패널 | `Cmd/Ctrl + Shift + →/←` |
 | 다음/이전 탭 | `Cmd/Ctrl + Option/Alt + →/←` |
+| 다음/이전 Result Tab | `Cmd/Ctrl + Option/Alt + Shift + →/←` |
 | 탭 직접 이동 | `Cmd/Ctrl + 1~9` |
 | 그리드 행 전체 선택 | `Shift + Space` |
 | 그리드 선택 영역 복사 | `Cmd/Ctrl + C` |

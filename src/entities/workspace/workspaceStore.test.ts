@@ -12,6 +12,21 @@ function apply(state: WorkspaceState, ...actions: WorkspaceAction[]): WorkspaceS
 }
 
 describe("workspaceReducer", () => {
+  it("cycles the active tab's results and stays put with fewer than two", () => {
+    let s = apply(emptyWorkspace(),
+      { type: "TAB_ADDED", tabId: "a" },
+      { type: "TAB_ADDED", tabId: "b" },
+      { type: "RESULT_ADDED", tabId: "b", resultTabId: "r1" },
+      { type: "RESULT_ADDED", tabId: "b", resultTabId: "r2" },
+    );
+    s = apply(s, { type: "RESULT_CYCLED", direction: 1 });
+    expect([s.activeTabId, s.tabs[1].activeResultTabId]).toEqual(["b", "r1"]);
+    s = apply(s, { type: "RESULT_CYCLED", direction: -1 });
+    expect([s.activeTabId, s.tabs[1].activeResultTabId]).toEqual(["b", "r2"]);
+    s = apply(s, { type: "RESULT_CLOSED", tabId: "b", resultTabId: "r1" }, { type: "RESULT_CYCLED", direction: 1 });
+    expect([s.activeTabId, s.tabs[1].activeResultTabId]).toEqual(["b", "r2"]);
+  });
+
   it("keeps tab addition, switching and closing inside independent split groups", () => {
     let s = apply(emptyWorkspace(),
       { type: "TAB_ADDED", tabId: "a" },

@@ -53,3 +53,9 @@ test("while recording, the close-tab shortcut is captured instead of closing", (
   expect(routerMock.back).not.toHaveBeenCalled();
   expect(closeTab.textContent).toMatch(/Shift/);
 });
+
+test("lists the result tab shortcuts under the grid group", () => {
+  render(<SettingsPage />);
+  expect(screen.getByRole("button", { name: "이전 Result 탭 단축키" }).textContent).toContain("←");
+  expect(screen.getByRole("button", { name: "다음 Result 탭 단축키" }).textContent).toContain("→");
+});

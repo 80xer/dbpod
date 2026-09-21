@@ -207,6 +207,8 @@ function WorkspaceContent({ connectionId }: { connectionId: string }) {
       else if (matches("nextPanel")) action = { type: "PANEL_CYCLED", direction: 1 };
       else if (matches("previousTab") || matches("previousTabArrow")) action = { type: "TAB_CYCLED", direction: -1 };
       else if (matches("nextTab") || matches("nextTabArrow")) action = { type: "TAB_CYCLED", direction: 1 };
+      else if (matches("previousResult")) action = { type: "RESULT_CYCLED", direction: -1 };
+      else if (matches("nextResult")) action = { type: "RESULT_CYCLED", direction: 1 };
       else if (matches("tabByNumber")) {
         const digit = shortcutDigit(e);
         if (digit) action = { type: "TAB_ACTIVATED_BY_INDEX", index: digit - 1 };
@@ -214,11 +216,18 @@ function WorkspaceContent({ connectionId }: { connectionId: string }) {
       if (!action) return;
       e.preventDefault();
       e.stopPropagation();
+      if (action.type === "RESULT_CYCLED") {
+        dispatch(action);
+        // The result pane remounts per result, so a grid that held focus is gone with it.
+        const area = (e.target as Element | null)?.closest?.("[data-result-area]");
+        if (area) requestAnimationFrame(() => area.querySelector<HTMLElement>('[role="grid"]')?.focus());
+        return;
+      }
       dispatchAndFocusEditor(action);
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [dispatchAndFocusEditor, changingDatabase, addQueryTab]);
+  }, [dispatchAndFocusEditor, dispatch, changingDatabase, addQueryTab]);
 
   if (!profile) return null;
 
