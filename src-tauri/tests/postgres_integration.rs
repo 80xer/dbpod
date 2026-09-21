@@ -795,6 +795,9 @@ async fn metadata_partition_hierarchy() {
         "CREATE TABLE public.inherited_child () INHERITS (public.inherited)",
         // More than the old flat-list limit, with the root sorting after its leaves.
         "DO $$ BEGIN FOR n IN 10..1010 LOOP EXECUTE format('CREATE TABLE public.p_%s PARTITION OF public.z_events FOR VALUES FROM (%s) TO (%s)', n, n, n + 1); END LOOP; END $$",
+        // More roots than the old cap, spread over two schemas: completion lists every
+        // schema in one call, and the cap used to drop whichever schemas sorted last.
+        "DO $$ BEGIN FOR n IN 1..1000 LOOP EXECUTE format('CREATE TABLE archive.r_%s (id int)', n); END LOOP; END $$",
     ] {
         let (sink, mut rx) = sink_channel();
         let accepted = query_service::execute(&state, req("t-partitions", sql, 10), sink).unwrap();
@@ -813,7 +816,7 @@ async fn metadata_partition_hierarchy() {
     .unwrap();
     let public = schemas.iter().find(|s| s.name == "public").unwrap().oid;
     let archive = schemas.iter().find(|s| s.name == "archive").unwrap().oid;
-    for schema_oids in [vec![public], vec![public, archive]] {
+    for (schema_oids, expected) in [(vec![public], 1006), (vec![public, archive], 2006)] {
         let objects = metadata_service::list_objects(
             &state,
             &MetadataListObjectsRequest {
@@ -824,7 +827,7 @@ async fn metadata_partition_hierarchy() {
         )
         .await
         .unwrap();
-        assert_eq!(objects.len(), 1006);
+        assert_eq!(objects.len(), expected);
         let root = objects.iter().find(|o| o.name == "z_events").unwrap();
         let branch = objects.iter().find(|o| o.name == "a_events").unwrap();
         let leaf = objects.iter().find(|o| o.name == "a_leaf").unwrap();
@@ -845,7 +848,7 @@ async fn metadata_partition_hierarchy() {
                 .iter()
                 .filter(|o| o.partition_parent_oid.is_none())
                 .count(),
-            3
+            expected - 1003
         );
         assert!(objects
             .iter()
@@ -864,8 +867,9 @@ async fn metadata_partition_hierarchy() {
     )
     .await
     .unwrap();
+    assert_eq!(archive_objects.len(), 1000);
     assert!(
-        archive_objects.is_empty(),
+        archive_objects.iter().all(|o| o.name != "a_leaf"),
         "partitions must only appear under their parent"
     );
 }

@@ -153,14 +153,13 @@ pub async fn list_objects(
                 let rows = sqlx::query(
                     // ponytail: load descendants together for complete search; use lazy
                     // branch queries if catalog size makes metadata loading too expensive.
-                    // Limit roots, not the flattened hierarchy, so partitions cannot hide
-                    // their parent or get separated from it at the list boundary.
+                    // No cap: completion asks for every schema at once, and a cap sorted
+                    // by schema name silently dropped the schemas that sort last.
                     "WITH RECURSIVE relations AS ( \
-                       (SELECT c.oid, NULL::oid AS partition_parent_oid \
-                        FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
-                        WHERE c.relnamespace::int8 = ANY($1) AND c.relkind::text = ANY($2) \
-                          AND NOT c.relispartition \
-                        ORDER BY n.nspname, c.relname LIMIT 1000) \
+                       SELECT c.oid, NULL::oid AS partition_parent_oid \
+                       FROM pg_class c \
+                       WHERE c.relnamespace::int8 = ANY($1) AND c.relkind::text = ANY($2) \
+                         AND NOT c.relispartition \
                        UNION ALL \
                        SELECT child.oid, i.inhparent \
                        FROM relations parent JOIN pg_inherits i ON i.inhparent = parent.oid \
