@@ -1299,3 +1299,95 @@ mod editing {
         assert_eq!(err.code, "INVALID_REQUEST");
     }
 }
+
+/// A reconnect must not leave the query it interrupted running on the server.
+///
+/// Deregistering an execution without cancelling it makes the query invisible to
+/// cancel while the backend keeps working, and a write would then be running twice
+/// once the user retries it on the new connection.
+#[tokio::test]
+async fn reconnect_cancels_the_query_it_interrupts() {
+    use dbpod_lib::application::connection_service;
+
+    let (_node, state) = setup().await;
+    let (sink, mut rx) = sink_channel();
+    let accepted = query_service::execute(
+        &state,
+        req("t-reconnect", "SELECT pg_sleep(20)", 10),
+        sink,
+    )
+    .unwrap();
+
+    // Let the backend reach the sleep, so the reconnect interrupts a running query
+    // rather than racing the dispatch.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    connection_service::connection_reconnect(&state, CONN_ID)
+        .await
+        .expect("reconnect");
+
+    // The interrupted execution reaches a terminal event rather than running on.
+    let events = collect_events(&state, &accepted.execution_id, &mut rx).await;
+    assert!(
+        matches!(
+            events.last(),
+            Some(QueryStreamEvent::Cancelled { .. } | QueryStreamEvent::Failed { .. })
+        ),
+        "reconnect left the execution unterminated: {events:?}"
+    );
+
+    // And the backend is gone: nothing is still sleeping on the server.
+    let (sink, mut check_rx) = sink_channel();
+    let accepted = query_service::execute(
+        &state,
+        req(
+            "t-check",
+            "SELECT count(*)::int8 FROM pg_stat_activity WHERE query LIKE 'SELECT pg_sleep(20)%' AND state = 'active'",
+            10,
+        ),
+        sink,
+    )
+    .unwrap();
+    let events = collect_events(&state, &accepted.execution_id, &mut check_rx).await;
+    let still_running = events.iter().find_map(|e| match e {
+        QueryStreamEvent::Rows { rows, .. } => rows.first().and_then(|r| r.first()).cloned(),
+        _ => None,
+    });
+    assert!(
+        matches!(&still_running, Some(DbValue::Integer { value }) if value == "0"),
+        "a backend outlived the reconnect: {still_running:?}"
+    );
+}
+
+/// A value that prints far larger than it arrives must be charged what it costs.
+///
+/// `1e100000::numeric` crosses the wire in a handful of bytes and decodes to a
+/// hundred thousand digits, so a budget taken from the wire alone never trips and
+/// the result grows without limit.
+#[tokio::test]
+async fn numeric_expansion_is_charged_to_the_memory_budget() {
+    let (_node, state) = setup().await;
+    let (sink, mut rx) = sink_channel();
+    let accepted = query_service::execute(
+        &state,
+        req(
+            "t-numeric",
+            "SELECT 1e100000::numeric FROM generate_series(1, 100)",
+            10_000,
+        ),
+        sink,
+    )
+    .unwrap();
+    let events = collect_events(&state, &accepted.execution_id, &mut rx).await;
+    assert!(
+        matches!(events.last(), Some(QueryStreamEvent::Completed { .. })),
+        "{events:?}"
+    );
+    let retained: usize = state.retained_usage.lock().unwrap().values().sum();
+    // 100 rows of ~100 KB of digits: anything near the wire size means the printed
+    // digits were never counted.
+    assert!(
+        retained >= 10_000_000,
+        "decoded digits were not charged to the budget: {retained} bytes"
+    );
+}

@@ -6,7 +6,7 @@ use sqlx::{Column, Row, TypeInfo, ValueRef};
 use crate::domain::db_value::{ArrayDimension, DbValue, JsonType, TemporalType};
 use crate::domain::events::{ColumnCategory, ColumnMeta, ColumnSource};
 
-use super::large_values::{LargeValueStore, INLINE_BINARY_LIMIT};
+use super::large_values::{LargeValueStore, RowBudget, INLINE_BINARY_LIMIT};
 
 fn category_of(ti: &PgTypeInfo) -> ColumnCategory {
     match ti.kind() {
@@ -56,8 +56,25 @@ pub fn column_meta(columns: &[PgColumn]) -> Vec<ColumnMeta> {
         .collect()
 }
 
-pub fn decode_row(row: &PgRow, large: &LargeValueStore) -> Vec<DbValue> {
-    (0..row.len()).map(|i| decode_cell(row, i, large)).collect()
+/// Decodes a row, charging each value to `budget` as it is produced.
+///
+/// None once the row stops fitting: the partial row is dropped, so a value that
+/// prints far larger than it arrived cannot expand past the budget before anyone
+/// has measured it.
+pub fn decode_row(row: &PgRow, budget: RowBudget<'_>) -> Option<Vec<DbValue>> {
+    let mut budget = budget;
+    let large = budget.store();
+    let mut values = Vec::with_capacity(row.len());
+    for i in 0..row.len() {
+        let value = decode_cell(row, i, large);
+        // Dropping the budget here refunds what this row's values added to it.
+        if !budget.account(value.retained_bytes()) {
+            return None;
+        }
+        values.push(value);
+    }
+    budget.keep();
+    Some(values)
 }
 
 fn fmt_f64(v: f64) -> String {
@@ -349,6 +366,12 @@ fn array_of<T>(values: Vec<Option<T>>, elem_oid: u32, f: impl Fn(T) -> DbValue) 
     }
 }
 
+/// ponytail: an array is handed to the driver whole, so its elements are decoded
+/// before the row budget sees any of them; a numeric array whose elements each print
+/// tens of thousands of digits can hold a few hundred MB for the moment it takes the
+/// row to be refused. Bounded per cell and per row, not per element. Bounding it
+/// per element means parsing the array wire format here instead of asking sqlx for
+/// `Vec<Option<T>>`; do that if hostile or absurd arrays become a real case.
 fn decode_array(row: &PgRow, i: usize, elem: &PgTypeInfo) -> Option<DbValue> {
     let oid = elem.oid().map(|o| o.0).unwrap_or(0);
     match elem.name() {

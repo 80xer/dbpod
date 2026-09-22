@@ -13,6 +13,68 @@ pub const CONNECTION_BUDGET: usize = 1024 * 1024 * 1024;
 pub const APP_BUDGET: usize = 2 * 1024 * 1024 * 1024;
 pub type RetainedUsage = Arc<Mutex<HashMap<String, usize>>>;
 
+fn row_estimate(bytes: usize, columns: usize) -> usize {
+    bytes
+        .saturating_mul(4)
+        .saturating_add(columns.saturating_mul(256))
+}
+
+/// One row's reservation, topped up as decoding reveals how big the row really is.
+///
+/// Decoding is checked value by value rather than once at the end: a row of wide
+/// numerics expands by orders of magnitude, and a row already built is a row already
+/// allocated, so a budget applied afterwards would report a peak it failed to prevent.
+pub struct RowBudget<'a> {
+    store: &'a LargeValueStore,
+    columns: usize,
+    /// The pre-decode estimate, which is what covers bytes moved into `map`.
+    wire: usize,
+    reserved: usize,
+    decoded: usize,
+    kept: bool,
+}
+
+impl<'a> RowBudget<'a> {
+    pub fn store(&self) -> &'a LargeValueStore {
+        self.store
+    }
+
+    /// The row is being kept, so everything it reserved is spent.
+    pub fn keep(mut self) {
+        self.kept = true;
+    }
+
+    /// Accounts for one decoded value. False once the row no longer fits the budget,
+    /// which stops the decode instead of letting the rest of the row expand into it.
+    pub fn account(&mut self, bytes: usize) -> bool {
+        self.decoded = self.decoded.saturating_add(bytes);
+        let needed = row_estimate(self.decoded, self.columns);
+        let Some(extra) = needed.checked_sub(self.reserved).filter(|e| *e > 0) else {
+            return true;
+        };
+        if !self.store.reserve(extra) {
+            return false;
+        }
+        self.reserved = needed;
+        true
+    }
+}
+
+impl Drop for RowBudget<'_> {
+    /// Refunds what decoding added to a row that was then thrown away.
+    ///
+    /// Only that part. The wire estimate stays charged, because a value too large to
+    /// inline was already moved into the store before the row was refused: those
+    /// bytes are still held, with nothing left pointing at them.
+    fn drop(&mut self) {
+        if self.kept {
+            return;
+        }
+        self.store
+            .release(self.reserved.saturating_sub(self.wire));
+    }
+}
+
 /// Result-owned rows and large values. Dropped on result_release / tab dispose.
 /// ponytail: rows share the result memory budget; use disk spooling
 /// if results must outgrow that budget.
@@ -42,14 +104,24 @@ impl LargeValueStore {
         }
     }
 
-    /// Conservatively accounts for retained Rust + renderer rows before decoding.
-    pub fn reserve_row(&self, raw_bytes: usize, columns: usize) -> bool {
+    /// Reserves for one row from its wire size, before decoding.
+    ///
+    /// Wire size is only a starting figure: a numeric prints far more digits than
+    /// its binary form carries, so the budget has to be topped up as the row decodes
+    /// (see [`RowBudget::account`]). Large binaries go the other way, living in `map`
+    /// under a handle the decoded row barely mentions, so the wire figure is what
+    /// covers them and neither number can replace the other.
+    pub fn reserve_row(&self, raw_bytes: usize, columns: usize) -> Option<RowBudget<'_>> {
         // Allow for the retained Rust value, renderer strings and serialization copies.
-        self.reserve(
-            raw_bytes
-                .saturating_mul(4)
-                .saturating_add(columns.saturating_mul(256)),
-        )
+        let wire = row_estimate(raw_bytes, columns);
+        self.reserve(wire).then_some(RowBudget {
+            store: self,
+            columns,
+            wire,
+            reserved: wire,
+            decoded: 0,
+            kept: false,
+        })
     }
 
     /// Never evict pinned/dirty results: the caller truncates the new result instead.
@@ -70,6 +142,24 @@ impl LargeValueStore {
         }
         *retained += bytes;
         true
+    }
+
+    /// Gives back bytes a row reserved and then did not use.
+    fn release(&self, bytes: usize) {
+        if bytes == 0 {
+            return;
+        }
+        let mut retained = self.retained.lock().unwrap();
+        *retained = retained.saturating_sub(bytes);
+        if let Some(usage) = &self.usage {
+            let mut usage = usage.lock().unwrap();
+            if let Some(total) = usage.get_mut(&self.connection_id) {
+                *total = total.saturating_sub(bytes);
+                if *total == 0 {
+                    usage.remove(&self.connection_id);
+                }
+            }
+        }
     }
 
     pub fn insert(&self, bytes: Vec<u8>) -> String {
@@ -158,6 +248,59 @@ impl Drop for LargeValueStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn decoded_expansion_counts_against_the_budget() {
+        let usage = RetainedUsage::default();
+        let store = LargeValueStore::owned("c".into(), "tab".into(), usage);
+        // A numeric arrives in a few bytes and prints tens of thousands of digits;
+        // the wire-sized reservation must grow to the printed size.
+        let mut budget = store.reserve_row(16, 1).unwrap();
+        assert!(budget.account(100_000));
+        assert!(*store.retained.lock().unwrap() >= 400_000);
+        budget.keep();
+        // Binary values live under a handle, so a small decoded row must not shrink
+        // the reservation the wire size already took.
+        let mut budget = store.reserve_row(1_000_000, 1).unwrap();
+        let before = *store.retained.lock().unwrap();
+        assert!(budget.account(64));
+        assert_eq!(*store.retained.lock().unwrap(), before);
+        budget.keep();
+    }
+
+    #[test]
+    fn a_refused_row_gives_back_what_decoding_added() {
+        let usage = RetainedUsage::default();
+        let store = LargeValueStore::owned("c".into(), "tab".into(), usage);
+        let wire = row_estimate(1024, 2);
+        {
+            let mut budget = store.reserve_row(1024, 2).unwrap();
+            assert!(budget.account(500_000));
+            assert!(*store.retained.lock().unwrap() > wire);
+            // Dropped without keep(): the row never made it into the result.
+        }
+        // The decode top-up comes back; the wire estimate stays, because whatever the
+        // row put in the value store is still there.
+        assert_eq!(*store.retained.lock().unwrap(), wire);
+        // A run of refused rows must not eat the budget one row at a time.
+        for _ in 0..200 {
+            let mut budget = store.reserve_row(0, 1).unwrap();
+            assert!(budget.account(RESULT_BUDGET / 8));
+        }
+        let mut budget = store.reserve_row(0, 1).unwrap();
+        assert!(budget.account(RESULT_BUDGET / 8));
+    }
+
+    #[test]
+    fn expansion_stops_partway_through_a_row() {
+        let usage = RetainedUsage::default();
+        let store = LargeValueStore::owned("c".into(), "tab".into(), usage);
+        let mut budget = store.reserve_row(64, 4).unwrap();
+        // Each value fits; the row as a whole does not, and the refusal lands on the
+        // value that crosses the line rather than after the whole row is built.
+        assert!(budget.account(RESULT_BUDGET / 8));
+        assert!(!budget.account(RESULT_BUDGET / 2));
+    }
+
     #[test]
     fn budgets_apply_across_results_and_release_on_drop() {
         let usage = RetainedUsage::default();

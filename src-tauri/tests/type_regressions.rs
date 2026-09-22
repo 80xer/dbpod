@@ -4,10 +4,20 @@ use dbpod_lib::domain::profile::TlsMode;
 use dbpod_lib::infrastructure::postgres::decoder::decode_row;
 use dbpod_lib::infrastructure::postgres::large_values::LargeValueStore;
 use dbpod_lib::infrastructure::postgres::transport::build_connect_options;
+use sqlx::postgres::PgRow;
 use sqlx::{AssertSqlSafe, Connection, Executor, PgConnection, Row};
 use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
 use testcontainers_modules::testcontainers::ImageExt;
+
+/// Decodes one row under a fresh budget. These rows are single small values, so
+/// the budget is never the thing under test here.
+fn decode(row: &PgRow, large: &LargeValueStore) -> Vec<DbValue> {
+    let budget = large
+        .reserve_row(0, row.len())
+        .expect("row budget available");
+    decode_row(row, budget).expect("row fits the result budget")
+}
 
 #[tokio::test]
 async fn temporal_extremes_ranges_and_unknown_binary_are_safe_and_faithful() {
@@ -65,7 +75,7 @@ async fn temporal_extremes_ranges_and_unknown_binary_are_safe_and_faithful() {
                 .fetch_one(&mut conn)
                 .await
                 .unwrap();
-            let values = decode_row(&row, &large);
+            let values = decode(&row, &large);
             let DbValue::Temporal {
                 temporal_type: actual_type,
                 value,
@@ -95,7 +105,7 @@ async fn temporal_extremes_ranges_and_unknown_binary_are_safe_and_faithful() {
     .await
     .unwrap();
     for (cell, expected) in
-        decode_row(&row, &large)
+        decode(&row, &large)
             .iter()
             .zip(["24:00:00", "24:00:00+15:59", "-2147483648 days"])
     {
@@ -119,7 +129,7 @@ async fn temporal_extremes_ranges_and_unknown_binary_are_safe_and_faithful() {
                 .await
                 .unwrap();
             assert!(
-                matches!(&decode_row(&row, &large)[0], DbValue::Range { value, .. } if value == literal)
+                matches!(&decode(&row, &large)[0], DbValue::Range { value, .. } if value == literal)
             );
         }
     }
@@ -141,7 +151,7 @@ async fn temporal_extremes_ranges_and_unknown_binary_are_safe_and_faithful() {
             .fetch_one(&mut conn)
             .await
             .unwrap();
-        let values = decode_row(&row, &large);
+        let values = decode(&row, &large);
         let DbValue::Range { value, range_type } = &values[0] else {
             panic!("expected range for {expression}: {:?}", values[0]);
         };
@@ -164,7 +174,7 @@ async fn temporal_extremes_ranges_and_unknown_binary_are_safe_and_faithful() {
         sqlx::postgres::PgValueFormat::Binary
     );
     assert!(
-        matches!(&decode_row(&row, &large)[0], DbValue::Unknown { value, .. } if value == "<point>")
+        matches!(&decode(&row, &large)[0], DbValue::Unknown { value, .. } if value == "<point>")
     );
 
     let row = conn.fetch_one("SELECT point(0, 0)").await.unwrap();
@@ -173,6 +183,6 @@ async fn temporal_extremes_ranges_and_unknown_binary_are_safe_and_faithful() {
         sqlx::postgres::PgValueFormat::Text
     );
     assert!(
-        matches!(&decode_row(&row, &large)[0], DbValue::Unknown { value, .. } if value == "(0,0)")
+        matches!(&decode(&row, &large)[0], DbValue::Unknown { value, .. } if value == "(0,0)")
     );
 }

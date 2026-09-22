@@ -339,11 +339,16 @@ async fn switch_database(
             .lock()
             .unwrap()
             .retain(|_, s| s.connection_id != connection_id);
-        state
-            .executions
-            .lock()
-            .unwrap()
-            .retain(|_, e| e.connection_id != connection_id);
+        // Cancel before deregistering: an execution dropped from the registry can no
+        // longer be cancelled by anyone, and its query would outlive the reconnect.
+        state.executions.lock().unwrap().retain(|_, e| {
+            if e.connection_id == connection_id {
+                e.cancel.cancel();
+                false
+            } else {
+                true
+            }
+        });
         ws.profile.database = database.into();
         ws.connect_opts = opts;
         (
@@ -448,21 +453,33 @@ pub async fn connection_close(state: &AppState, connection_id: &str) -> Result<(
     Ok(())
 }
 
+/// Asks every session to roll back and close, then waits for all of them at once.
+///
+/// One bounded wait, not one per session: a session still finishing a query would
+/// otherwise add its own timeout on top of every other session's, and the caller is
+/// usually a reconnect the user is waiting on. A session that misses the deadline is
+/// left to its own actor, which closes the connection when this handle drops.
 async fn close_sessions(sessions: HashMap<String, SessionHandle>) {
+    let mut replies = Vec::with_capacity(sessions.len());
     for handle in sessions.values() {
         let (tx, rx) = tokio::sync::oneshot::channel();
-        if handle
-            .tx
-            .send(SessionMsg::Close {
+        let sent = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            handle.tx.send(SessionMsg::Close {
                 rollback: true,
                 reply: tx,
-            })
-            .await
-            .is_ok()
-        {
-            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), rx).await;
+            }),
+        )
+        .await;
+        if matches!(sent, Ok(Ok(()))) {
+            replies.push(rx);
         }
     }
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        futures_util::future::join_all(replies),
+    )
+    .await;
 }
 
 async fn connect_control(opts: &PgConnectOptions) -> Result<(PgConnection, String), AppError> {

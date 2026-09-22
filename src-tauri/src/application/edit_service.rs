@@ -588,12 +588,16 @@ fn row_to_updated(
                 .unwrap_or(0)
         })
         .sum();
-    if !store.reserve_row(raw_bytes, row.len()) {
+    // The budget follows the decode value by value: wire size does not bound what a
+    // value prints to, so a row is charged as it is built.
+    let decoded = store
+        .reserve_row(raw_bytes, row.len())
+        .and_then(|budget| decoder::decode_row(row, budget));
+    let Some(decoded) = decoded else {
         return Err(AppError::invalid_request(
             "updated rows exceed the result memory budget; release other results and retry",
         ));
-    }
-    let decoded = decoder::decode_row(row, store);
+    };
     let mut values = HashMap::new();
     let mut xmin = None;
     for (i, col) in row.columns().iter().enumerate() {
@@ -651,7 +655,18 @@ pub async fn commit(
     sink(ChangesCommitEvent::Started { total_rows: total });
 
     let progress_sink = sink.clone();
-    let result = metadata_service::with_control(state, &set.connection_id, move |conn| {
+    // Generous next to a catalog read: up to 500 statements, each already capped by
+    // statement_timeout, so this deadline is here to catch a dead socket rather than
+    // slow work. Abandoning it says nothing about whether COMMIT reached the server.
+    let result = metadata_service::with_control_until(
+        state,
+        &set.connection_id,
+        std::time::Duration::from_secs(300),
+        AppError::new(
+            "COMMIT_OUTCOME_UNKNOWN",
+            "The database stopped answering during the commit. Check it before retrying; changes may have been saved.",
+        ),
+        move |conn| {
         Box::pin(async move {
             let database: String = sqlx::query_scalar("SELECT current_database()")
                 .fetch_one(&mut *conn).await.map_err(|e| AppError::from_sqlx(&e))?;
@@ -781,7 +796,8 @@ pub async fn commit(
                 }
             }
         })
-    })
+        },
+    )
     .await;
 
     match result {

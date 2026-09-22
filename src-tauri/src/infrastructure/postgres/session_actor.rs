@@ -466,12 +466,17 @@ async fn run_execution(
                                 .unwrap_or(0)
                         })
                         .sum();
-                    if !exec.large.reserve_row(raw_bytes, row.len()) {
+                    // The budget follows the decode value by value: wire size does not
+                    // bound what a value prints to, so a row is charged as it is built.
+                    let decoded = exec
+                        .large
+                        .reserve_row(raw_bytes, row.len())
+                        .and_then(|budget| decoder::decode_row(&row, budget));
+                    let Some(decoded) = decoded else {
                         receiving = false;
                         truncated = true;
                         continue;
-                    }
-                    let decoded = decoder::decode_row(&row, &exec.large);
+                    };
                     let payload_bytes = serde_json::to_vec(&decoded)
                         .map(|b| b.len())
                         .unwrap_or(usize::MAX);

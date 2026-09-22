@@ -10,10 +10,44 @@ pub fn quote_ident(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }
 
+/// Server-side `statement_timeout` on the control connection, plus room for one
+/// round trip: past this a catalog read is not slow, it is unanswered.
+pub(crate) const CATALOG_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(35);
+
 /// Runs `f` on the workspace's control connection, connecting lazily.
 pub(crate) async fn with_control<T, F>(
     state: &AppState,
     connection_id: &str,
+    f: F,
+) -> Result<T, AppError>
+where
+    F: for<'c> FnOnce(
+        &'c mut PgConnection,
+    ) -> futures_util::future::BoxFuture<'c, Result<T, AppError>>,
+{
+    with_control_until(
+        state,
+        connection_id,
+        CATALOG_TIMEOUT,
+        AppError::new(
+            "CONNECTION_TIMEOUT",
+            "the database stopped answering; the metadata request was abandoned",
+        ),
+        f,
+    )
+    .await
+}
+
+/// `with_control` with the caller's own deadline and timeout error.
+///
+/// A catalog read and a 500-statement commit do not deserve the same deadline, and
+/// the caller is the only one that knows whether an abandoned operation may still be
+/// in flight on the server. `timed_out` is returned verbatim when the deadline passes.
+pub(crate) async fn with_control_until<T, F>(
+    state: &AppState,
+    connection_id: &str,
+    timeout: std::time::Duration,
+    timed_out: AppError,
     f: F,
 ) -> Result<T, AppError>
 where
@@ -62,14 +96,34 @@ where
         *guard = Some(conn);
     }
     let conn = guard.as_mut().unwrap();
-    let result = f(conn).await;
+    // The server's statement_timeout cannot end a wait for a reply that is never
+    // coming, so the client keeps its own deadline. Without it a black-holed socket
+    // holds this lock until the TCP stack gives up, and reconnecting is the one thing
+    // that would fix it: it needs the same lock and fails with CONNECTION_BUSY.
+    let result = match tokio::time::timeout(timeout, f(conn)).await {
+        Ok(result) => result,
+        Err(_) => Err(timed_out),
+    };
     if result.is_err() {
         // Drop a possibly-stale control connection so the next call reconnects.
         if let Some(c) = guard.take() {
-            let _ = sqlx::Connection::close(c).await;
+            discard(c).await;
         }
     }
     result
+}
+
+/// Closes a connection that may be unusable, without waiting on it.
+///
+/// Both closes talk to the server: the graceful one sends Terminate and the hard one
+/// still flushes the socket, so either can hang on the connection this is called for.
+/// Dropping the future drops the connection, which closes the socket regardless.
+async fn discard(conn: PgConnection) {
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        sqlx::Connection::close(conn),
+    )
+    .await;
 }
 
 pub async fn list_databases(
