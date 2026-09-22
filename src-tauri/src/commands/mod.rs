@@ -42,10 +42,12 @@ pub struct AiChatApproveRequest { pub request_id: String, #[ts(type = "number")]
 /// nobody is there to answer a permission prompt and anything not listed here
 /// is denied outright. Schema inspection only: writing a query is the panel's
 /// job, running one is the editor's, so `run_query` is deliberately absent.
-const AI_ALLOWED_TOOLS: [&str; 17] = [
-    "Read",
-    "Grep",
-    "Glob",
+///
+/// No filesystem tools. The panel reads schema names and sample rows from the
+/// database, and that text reaches the model as instructions it cannot tell from
+/// the user's own; with `Read` or `Glob` on the list, one hostile row is enough to
+/// have private keys and dotfiles read off this machine and sent to the provider.
+const AI_ALLOWED_TOOLS: [&str; 14] = [
     "mcp__niv-db__db_overview",
     "mcp__niv-db__list_schemas",
     "mcp__niv-db__list_tables",
@@ -108,6 +110,9 @@ pub async fn ai_chat(
     // separator: a prompt opening with a SQL comment reads as an option without it.
     command.args(["--", &request.prompt]);
     command.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+    // Drop alone leaves the child running: without this an early return orphans a CLI
+    // that still holds the session and goes on talking to the provider.
+    command.kill_on_drop(true);
     command_execute_with_cancel(state, request_id.clone(), command, on_event.clone()).await?;
     // A session only exists once the CLI has run; announcing it earlier makes the
     // next turn resume an id that a failed turn never created.
@@ -163,6 +168,44 @@ pub async fn ai_chat_approve(
         .is_ok())
 }
 
+/// Removes the job from the registry however the turn ends.
+///
+/// The registry is what cancel and approval look in, so an entry left behind by an
+/// early return keeps answering for a process that is already gone, and holds an id
+/// the next request cannot reuse.
+struct JobGuard<'a> {
+    jobs: &'a std::sync::Mutex<std::collections::HashMap<String, crate::state::AiChatJob>>,
+    request_id: String,
+}
+
+impl Drop for JobGuard<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut jobs) = self.jobs.lock() {
+            jobs.remove(&self.request_id);
+        }
+    }
+}
+
+/// Registers a running AI job, refusing an id that is already running.
+///
+/// The id comes from the caller, and letting a repeat overwrite the entry would
+/// strand the first process: nothing could cancel it and nobody would reap it.
+fn register_job<'a>(
+    state: &'a AppState,
+    request_id: &str,
+    job: crate::state::AiChatJob,
+) -> Result<JobGuard<'a>, AppError> {
+    let mut jobs = state
+        .ai_chat_jobs
+        .lock()
+        .map_err(|_| AppError::internal("AI 취소 상태를 확인할 수 없습니다"))?;
+    if jobs.contains_key(request_id) {
+        return Err(AppError::invalid_request("이미 실행 중인 AI 요청입니다"));
+    }
+    jobs.insert(request_id.to_string(), job);
+    Ok(JobGuard { jobs: &state.ai_chat_jobs, request_id: request_id.to_string() })
+}
+
 async fn command_execute_with_cancel(
     state: State<'_, AppState>,
     request_id: String,
@@ -184,11 +227,7 @@ async fn command_execute_with_cancel(
         bytes
     });
     let mut lines = BufReader::new(stdout).lines();
-    state
-        .ai_chat_jobs
-        .lock()
-        .map_err(|_| AppError::internal("AI 취소 상태를 확인할 수 없습니다"))?
-        .insert(request_id.clone(), crate::state::AiChatJob { pid, canceled: false, approvals: None });
+    let _job = register_job(&state, &request_id, crate::state::AiChatJob { pid, canceled: false, approvals: None })?;
     while let Some(line) = lines.next_line().await.map_err(|e| AppError::new("AI_FAILED", e.to_string()))? {
         if state
             .ai_chat_jobs
@@ -206,12 +245,14 @@ async fn command_execute_with_cancel(
         }
     }
     let status = child.wait().await.map_err(|e| AppError::new("AI_FAILED", e.to_string()))?;
-    let job = state
+    // Read the flag, leave the entry to the guard: removing it here and again on drop
+    // would delete the next request that reuses this id in between.
+    let canceled = state
         .ai_chat_jobs
         .lock()
         .map_err(|_| AppError::internal("AI 취소 상태를 확인할 수 없습니다"))?
-        .remove(&request_id);
-    let canceled = job.is_some_and(|job| job.canceled);
+        .get(&request_id)
+        .is_some_and(|job| job.canceled);
     let stderr = stderr_task.await.unwrap_or_default();
     if canceled {
         return Ok(());
@@ -234,6 +275,9 @@ async fn run_codex_app_server(
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
+        // Drop alone leaves the child running: the turn has many early returns and
+        // each one would otherwise orphan an app-server holding the thread's lock.
+        .kill_on_drop(true)
         .spawn()
         .map_err(|e| AppError::new("AI_UNAVAILABLE", format!("Codex app-server를 실행할 수 없습니다: {e}")))?;
     let pid = child
@@ -244,11 +288,7 @@ async fn run_codex_app_server(
     let stdout = child.stdout.take().ok_or_else(|| AppError::internal("Codex stdout unavailable"))?;
     let mut lines = BufReader::new(stdout).lines();
     let (approval_tx, mut approval_rx) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
-    state
-        .ai_chat_jobs
-        .lock()
-        .map_err(|_| AppError::internal("AI 취소 상태를 확인할 수 없습니다"))?
-        .insert(request_id.clone(), crate::state::AiChatJob { pid, canceled: false, approvals: Some(approval_tx) });
+    let _job = register_job(&state, &request_id, crate::state::AiChatJob { pid, canceled: false, approvals: Some(approval_tx) })?;
     async fn send(input: &mut tokio::process::ChildStdin, value: serde_json::Value) -> Result<(), AppError> {
         use tokio::io::AsyncWriteExt;
         input.write_all(format!("{}\n", value).as_bytes()).await.map_err(|e| AppError::new("AI_FAILED", e.to_string()))?;
@@ -312,6 +352,13 @@ async fn run_codex_app_server(
             Ok(v) => v,
             Err(_) => continue,
         };
+        // A refused turn answers the request and then says nothing more, so a loop
+        // that only watches for notifications would wait for output that never comes.
+        if value.get("id").and_then(|id| id.as_i64()) == Some(3) {
+            if let Some(message) = value.pointer("/error/message").and_then(|m| m.as_str()) {
+                return Err(AppError::new("AI_FAILED", format!("Codex가 요청을 처리하지 못했습니다: {message}")));
+            }
+        }
         match value.get("method").and_then(|m| m.as_str()) {
             Some("item/agentMessage/delta") => {
                 if let Some(text) = value.pointer("/params/delta").and_then(|v| v.as_str()) {
@@ -341,12 +388,13 @@ async fn run_codex_app_server(
             _ => {}
         }
     }
-    let job = state
+    let canceled = state
         .ai_chat_jobs
         .lock()
         .map_err(|_| AppError::internal("AI 취소 상태를 확인할 수 없습니다"))?
-        .remove(&request_id);
-    if job.is_some_and(|job| job.canceled) {
+        .get(&request_id)
+        .is_some_and(|job| job.canceled);
+    if canceled {
         return Ok(());
     }
     let _ = on_event.send(AiChatEvent::Completed);
