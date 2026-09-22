@@ -13,6 +13,26 @@ import { shortcutMatches } from "../../entities/settings/shortcuts";
 
 export { cellText } from "./cellText";
 
+// The save command refuses anything past this, so collecting more is work spent on
+// data that will be rejected, times the copies a copy or an export makes of it.
+const MAX_COLLECTED_BYTES = 100 * 1024 * 1024;
+
+/**
+ * How much text a value contributes to an export.
+ *
+ * Measured on the cell text rather than on the row's JSON: JSON repeats a kind and a
+ * field name for every cell, so a column of integers weighs several times its CSV
+ * form and an export well inside the limit would be refused for being over it.
+ *
+ * An approximation, and deliberately the forgiving kind: it counts UTF-16 units, so
+ * Korean text weighs more in the file than it does here. The save command measures
+ * the real bytes, so an underestimate costs a late refusal rather than a wrong one.
+ */
+function textBytes(value: DbValue): number {
+  if (value.kind === "array") return value.values.reduce((sum, v) => sum + textBytes(v), 0);
+  return value.kind === "null" || value.kind === "boolean" ? 0 : (value.value?.length ?? 0);
+}
+
 type CellPos = { r: number; c: number };
 type Selection = { anchor: CellPos; focus: CellPos };
 
@@ -213,13 +233,23 @@ export function ResultGrid({ resultTabId, hiddenColumns, sort, onHeaderClick, ed
     }
   };
 
+  /**
+   * Every row of the result, not just the page on screen.
+   *
+   * Paging stops at the ceiling the save command enforces. Collecting everything and
+   * checking afterwards means a copy of the rows, a copy of the formatted text and a
+   * copy crossing IPC all get built out of data that is about to be refused.
+   */
   const allResultRows = async () => {
     const rows = [...snapshot.rows];
     if (!snapshot.hasMoreRows || !snapshot.executionId) return rows;
     let offset = snapshot.nextRowOffset ?? 0;
+    let bytes = rows.reduce((sum, row) => sum + row.reduce((n, cell) => n + textBytes(cell), 0), 0);
     for (;;) {
       const page = await ipc.resultRowsFetch({ resultTabId, executionId: snapshot.executionId, offset });
       if (page.nextOffset !== offset + page.rows.length || (page.hasMore && !page.rows.length)) throw new Error("결과 페이지의 행 순서가 올바르지 않습니다.");
+      bytes += page.rows.reduce((sum, row) => sum + row.reduce((n, cell) => n + textBytes(cell), 0), 0);
+      if (bytes > MAX_COLLECTED_BYTES) throw new Error("결과가 너무 커서 한 번에 내보내거나 복사할 수 없습니다. 쿼리에 LIMIT을 걸어 나눠 주세요.");
       rows.push(...page.rows);
       if (!page.hasMore) return rows;
       offset = page.nextOffset;
