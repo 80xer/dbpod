@@ -68,11 +68,27 @@ export function SavedQueriesPanel({ onSaveCurrent, saveShortcut, onOpen, onClose
           </li>
         )}
         {entries.map((e) => (
-          <li key={e.id} className="group mb-1 rounded border border-gray-200 bg-white p-1.5">
+          <li
+            key={e.id}
+            role="button"
+            tabIndex={0}
+            onClick={() => onOpen(e)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                onOpen(e);
+              }
+            }}
+            className="group mb-1 cursor-pointer rounded border border-gray-200 bg-white p-1.5 hover:border-blue-300"
+          >
             <button
               type="button"
-              onClick={() => onOpen(e)}
-              title="새 쿼리 탭에서 열기"
+              onClick={(event) => {
+                event.stopPropagation();
+                onOpen(e);
+              }}
+              onKeyDown={(event) => event.stopPropagation()}
+              title="쿼리 열기"
               className="block w-full truncate text-left text-xs font-medium text-gray-800 hover:text-blue-700"
             >
               {e.name}
@@ -82,19 +98,27 @@ export function SavedQueriesPanel({ onSaveCurrent, saveShortcut, onOpen, onClose
               <span>{new Date(e.updatedAt).toLocaleString()}</span>
               <button
                 type="button"
-                onClick={() => void promptText("새 이름", e.name).then((input) => {
-                  const name = input?.trim();
-                  if (name && name !== e.name) attempt(() => savedQueryStore.rename(e.id, name));
-                })}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  void promptText("새 이름", e.name).then((input) => {
+                    const name = input?.trim();
+                    if (name && name !== e.name) attempt(() => savedQueryStore.rename(e.id, name));
+                  });
+                }}
+                onKeyDown={(event) => event.stopPropagation()}
                 className="ml-auto hidden rounded px-1 hover:text-blue-700 group-hover:inline"
               >
                 이름 변경
               </button>
               <button
                 type="button"
-                onClick={() => void confirmDialog(`"${e.name}"을(를) 삭제할까요?`).then((ok) => {
-                  if (ok) attempt(() => savedQueryStore.remove(e.id));
-                })}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  void confirmDialog(`"${e.name}"을(를) 삭제할까요?`).then((ok) => {
+                    if (ok) attempt(() => savedQueryStore.remove(e.id));
+                  });
+                }}
+                onKeyDown={(event) => event.stopPropagation()}
                 className="hidden rounded px-1 hover:text-red-600 group-hover:inline"
               >
                 삭제

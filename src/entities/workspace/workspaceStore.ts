@@ -265,6 +265,39 @@ export const sqlSelections = new Map<string, { anchor: number; head: number }>()
 /** tabId -> saved query this tab edits, so saving overwrites instead of asking. */
 export const savedQueryIds = new Map<string, string>();
 
+/**
+ * Moves every tab still showing `previousSql` on to the text just saved.
+ *
+ * The same saved query can be open in more than one connection, each with its own
+ * workspace and its own draft, and saving in one of them used to leave the others
+ * showing text the entry no longer held. Worse, those tabs then counted as modified,
+ * so closing one offered to save the stale copy back over the edit.
+ *
+ * A tab is moved only when its draft still matches what the entry said before the
+ * save. Anything else is the user's own unsaved work, which keeps its draft and its
+ * modified marker rather than being overwritten by someone else's edit.
+ *
+ * Returns the tabs it changed, so a mounted editor can be pointed at the new text.
+ */
+export function syncSavedQueryTabs(
+  savedQueryId: string,
+  sql: string,
+  previousSql: string | undefined,
+  exceptTabId?: string,
+): string[] {
+  if (previousSql === undefined || previousSql === sql) return [];
+  const moved: string[] = [];
+  for (const state of workspaceStates.values()) {
+    for (const tab of state.tabs) {
+      if (tab.id === exceptTabId || savedQueryIds.get(tab.id) !== savedQueryId) continue;
+      if ((sqlDrafts.get(tab.id) ?? "") !== previousSql) continue;
+      sqlDrafts.set(tab.id, sql);
+      moved.push(tab.id);
+    }
+  }
+  return moved;
+}
+
 export type TableDataView = {
   offset: number;
   sortAttribute: number | null;

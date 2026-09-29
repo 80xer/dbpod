@@ -4,7 +4,7 @@ import { indentWithTab } from "@codemirror/commands";
 import { findNext, findPrevious, gotoLine, openSearchPanel, search, selectNextOccurrence, selectSelectionMatches } from "@codemirror/search";
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { EditorState, Prec } from "@codemirror/state";
-import { EditorView, keymap, tooltips, type Command } from "@codemirror/view";
+import { EditorView, keymap, tooltips, type Command, type KeyBinding } from "@codemirror/view";
 import { parseMixed, type SyntaxNode } from "@lezer/common";
 import { tags } from "@lezer/highlight";
 import { basicSetup } from "codemirror";
@@ -13,6 +13,12 @@ import { getAppSettings } from "../../entities/settings/appSettings";
 import { shortcutToCodeMirror } from "../../entities/settings/shortcuts";
 import { formatSqlInEditor } from "./formatSql";
 import { sqlCompletionSource } from "./sqlCompletion";
+
+/** One keymap entry, or none when the user has cleared that shortcut. */
+function bind(shortcut: string, run: Command): KeyBinding[] {
+  const key = shortcutToCodeMirror(shortcut);
+  return key ? [{ key, run }] : [];
+}
 
 const postgresWithRoutineBodies = PostgreSQL.configureLanguage({
   wrap: parseMixed((node, input) => {
@@ -114,7 +120,11 @@ export function SqlEditor({
           // corner (see index.css) rather than eating a full-width strip.
           search({ top: true }),
           sql({ dialect: postgresWithRoutineBodies }),
-          ...(connectionId && database ? [autocompletion({ override: [sqlCompletionSource(connectionId, database)], filterStrict: true })] : []),
+          // Fuzzy, not prefix-only: names here are abbreviated and underscore-joined,
+          // so the part a person remembers is rarely the part a name starts with.
+          // CodeMirror ranks a prefix first, then a word start, then scattered letters,
+          // which puts `fnn_fy_his` under `ffh` without burying it under `f`.
+          ...(connectionId && database ? [autocompletion({ override: [sqlCompletionSource(connectionId, database)] })] : []),
           // The editor pane clips its overflow, so a completion list opening near
           // the bottom edge is cut off by the Result area below it.
           tooltips({ parent: document.body }),
@@ -130,40 +140,28 @@ export function SqlEditor({
           }),
           Prec.highest(
             keymap.of([
-              {
-                key: shortcutToCodeMirror(shortcuts.runQueryNew),
-                run: () => {
-                  if (!readOnly) runNewRef.current?.();
-                  return true;
-                },
-              },
-              {
-                key: shortcutToCodeMirror(shortcuts.runQuery),
-                run: () => {
-                  if (!readOnly) runRef.current?.();
-                  return true;
-                },
-              },
-              {
-                key: shortcutToCodeMirror(shortcuts.formatSql),
-                run: (target) => readOnly || formatSqlInEditor(target),
-              },
-              {
-                key: shortcutToCodeMirror(shortcuts.cancelQueryAlternate),
-                run: () => {
-                  cancelRef.current?.();
-                  return true;
-                },
-              },
-              {
-                key: shortcutToCodeMirror(shortcuts.cancelQuery),
-                run: () => {
-                  cancelRef.current?.();
-                  return true;
-                },
-              },
+              // A shortcut the user cleared has no key to bind, and CodeMirror would
+              // take the empty string for one.
+              ...bind(shortcuts.runQueryNew, () => {
+                if (!readOnly) runNewRef.current?.();
+                return true;
+              }),
+              ...bind(shortcuts.runQuery, () => {
+                if (!readOnly) runRef.current?.();
+                return true;
+              }),
+              ...bind(shortcuts.formatSql, (target) => readOnly || formatSqlInEditor(target)),
+              ...bind(shortcuts.cancelQueryAlternate, () => {
+                cancelRef.current?.();
+                return true;
+              }),
+              ...bind(shortcuts.cancelQuery, () => {
+                cancelRef.current?.();
+                return true;
+              }),
               ...searchBindings.flatMap(([shortcut, command, builtIn]) => {
                 const key = shortcutToCodeMirror(shortcut);
+                if (!key) return [{ key: builtIn, run: () => true }];
                 return key === builtIn
                   ? [{ key, run: command }]
                   : [{ key, run: command }, { key: builtIn, run: () => true }];

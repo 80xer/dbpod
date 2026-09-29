@@ -52,8 +52,12 @@ export const defaultShortcuts = Object.fromEntries(
 const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
 const shortcutKeys = /^(Key[A-Z]|Digit(?:[1-9])?|F(?:[1-9]|1[0-2])|Enter|Escape|Tab|ArrowLeft|ArrowRight|ArrowUp|ArrowDown|Home|End|Space|Period|Comma)$/;
 
+/** The empty string is the unbound shortcut, and a stored one must survive a reload. */
+export const UNBOUND = "";
+
 export function isValidShortcut(shortcut: unknown): shortcut is string {
   if (typeof shortcut !== "string") return false;
+  if (shortcut === UNBOUND) return true;
   const parts = shortcut.split("+");
   const key = parts.pop() ?? "";
   return shortcutKeys.test(key) && new Set(parts).size === parts.length
@@ -94,12 +98,16 @@ function signature(shortcut: string): { modifiers: string; key: string } {
 }
 
 export function shortcutsConflict(left: string, right: string): boolean {
+  // Nothing collides with a shortcut that is not bound, and two unbound ones are not
+  // each other's conflict either.
+  if (left === UNBOUND || right === UNBOUND) return false;
   const a = signature(left);
   const b = signature(right);
   return a.modifiers === b.modifiers && (a.key === b.key || (a.key === "Digit" && /^Digit[1-9]$/.test(b.key)) || (b.key === "Digit" && /^Digit[1-9]$/.test(a.key)));
 }
 
 export function shortcutMatches(event: KeyboardEvent | ReactKeyboardEvent, shortcut: string): boolean {
+  if (shortcut === UNBOUND) return false;
   const expected = signature(shortcut);
   const actual = shortcutFromEvent(event, expected.key === "Digit");
   return actual !== null && shortcutsConflict(actual, shortcut);
@@ -110,6 +118,7 @@ export function shortcutDigit(event: KeyboardEvent): number | null {
 }
 
 export function displayShortcut(shortcut: string): string {
+  if (shortcut === UNBOUND) return "없음";
   const labels: Record<string, string> = {
     Mod: isMac ? "Cmd" : "Ctrl", Ctrl: "Ctrl", Alt: isMac ? "Option" : "Alt", Shift: "Shift",
     ArrowLeft: "←", ArrowRight: "→", ArrowUp: "↑", ArrowDown: "↓", Period: ".", Comma: ",", Space: "Space", Digit: "1…9",
@@ -117,7 +126,9 @@ export function displayShortcut(shortcut: string): string {
   return shortcut.split("+").map((part) => labels[part] ?? part.replace(/^Key/, "").replace(/^Digit/, "")).join("+");
 }
 
+/** Empty for an unbound shortcut; callers leave those out of the keymap. */
 export function shortcutToCodeMirror(shortcut: string): string {
+  if (shortcut === UNBOUND) return UNBOUND;
   const parts = shortcut.split("+");
   const key = parts.pop() ?? "";
   const codeMirrorKey = key === "Period" ? "." : key === "Comma" ? "," : /^Key[A-Z]$/.test(key)

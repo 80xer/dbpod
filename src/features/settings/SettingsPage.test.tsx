@@ -54,6 +54,24 @@ test("while recording, the close-tab shortcut is captured instead of closing", (
   expect(closeTab.textContent).toMatch(/Shift/);
 });
 
+test("clears a shortcut and stores it as cleared", () => {
+  render(<SettingsPage />);
+  fireEvent.click(screen.getByRole("button", { name: "현재 SQL 실행 단축키 해제" }));
+  expect(screen.getByRole("button", { name: "현재 SQL 실행 단축키" }).textContent).toBe("없음");
+  expect(screen.getByRole("button", { name: "현재 SQL 실행 단축키 해제" }).hasAttribute("disabled")).toBe(true);
+  // Stored empty rather than dropped: a missing key would come back as the default
+  // the user just removed. That the loader keeps it is isValidShortcut's test.
+  expect(localStorage.getItem("dbpod.app-settings.v1")).toContain('"runQuery":""');
+});
+
+test("Backspace while recording clears the shortcut", () => {
+  render(<SettingsPage />);
+  const split = screen.getByRole("button", { name: "패널 분할 단축키" });
+  fireEvent.click(split);
+  fireEvent.keyDown(window, { key: "Backspace", code: "Backspace" });
+  expect(split.textContent).toBe("없음");
+});
+
 test("lists the result tab shortcuts under the grid group", () => {
   render(<SettingsPage />);
   expect(screen.getByRole("button", { name: "이전 Result 탭 단축키" }).textContent).toContain("←");

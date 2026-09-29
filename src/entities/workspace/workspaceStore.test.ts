@@ -2,7 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   emptyWorkspace,
   getTabGroups,
+  savedQueryIds,
+  sqlDrafts,
+  syncSavedQueryTabs,
   workspaceReducer,
+  workspaceStates,
   type WorkspaceAction,
   type WorkspaceState,
 } from "./workspaceStore";
@@ -164,6 +168,36 @@ describe("workspaceReducer", () => {
     expect(s.tabs[0].runningExecutionId).toBeUndefined();
     expect(s.tabs[0].resultTabs[0].isRunning).toBe(false);
     expect(s.tabs[0].sessionId).toBe("s1");
+  });
+
+  it("moves other connections' tabs on to a saved query's new text, but not edited ones", () => {
+    workspaceStates.clear();
+    sqlDrafts.clear();
+    savedQueryIds.clear();
+    const workspace = (...ids: string[]) =>
+      apply(emptyWorkspace(), ...ids.map((tabId) => ({ type: "TAB_ADDED", tabId }) as WorkspaceAction));
+    workspaceStates.set("conn-a", workspace("saver"));
+    workspaceStates.set("conn-b", workspace("follower", "edited", "other-query"));
+    for (const id of ["saver", "follower", "edited"]) savedQueryIds.set(id, "saved-1");
+    savedQueryIds.set("other-query", "saved-2");
+    sqlDrafts.set("saver", "SELECT 2");
+    sqlDrafts.set("follower", "SELECT 1");
+    sqlDrafts.set("edited", "SELECT 1 -- mine");
+    sqlDrafts.set("other-query", "SELECT 1");
+
+    const moved = syncSavedQueryTabs("saved-1", "SELECT 2", "SELECT 1", "saver");
+
+    expect(moved).toEqual(["follower"]);
+    expect(sqlDrafts.get("follower")).toBe("SELECT 2");
+    // Its own unsaved work is not someone else's to overwrite.
+    expect(sqlDrafts.get("edited")).toBe("SELECT 1 -- mine");
+    // A different saved query that happens to read the same is not this one.
+    expect(sqlDrafts.get("other-query")).toBe("SELECT 1");
+
+    // A first save has nothing to move off, and re-saving the same text moves nobody.
+    expect(syncSavedQueryTabs("saved-1", "SELECT 3", undefined)).toEqual([]);
+    expect(syncSavedQueryTabs("saved-1", "SELECT 2", "SELECT 2")).toEqual([]);
+    workspaceStates.clear();
   });
 
   it("pin toggling flips only the target result", () => {

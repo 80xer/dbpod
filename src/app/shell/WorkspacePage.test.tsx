@@ -589,6 +589,94 @@ it("saves the active query by shortcut: names it once, then overwrites it silent
   expect(savedQueryStore.list()).toHaveLength(1);
 });
 
+it("moves the same saved query open in another connection on to the text just saved", async () => {
+  savedQueryIds.clear();
+  savedQueryStore.hydrate([{ id: "saved-1", name: "Daily", sql: "SELECT 'saved'", updatedAt: "2026-09-07T00:00:00Z" }]);
+  for (const id of ["A-tab", "B-tab"]) {
+    savedQueryIds.set(id, "saved-1");
+    sqlDrafts.set(id, "SELECT 'saved'");
+  }
+  await mountWorkspace();
+  fireEvent.change(editor(), { target: { value: "SELECT 'edited'" } });
+  await act(async () => { fireEvent.keyDown(window, { key: "s", code: "KeyS", metaKey: true }); });
+  await waitFor(() => expect(savedQueryStore.list()[0].sql).toBe("SELECT 'edited'"));
+
+  // B was showing exactly what the entry said a moment ago, so it follows the save
+  // instead of sitting on text the query no longer has and counting as modified.
+  expect(sqlDrafts.get("B-tab")).toBe("SELECT 'edited'");
+});
+
+it("leaves another connection's own unsaved edits alone when the query is saved", async () => {
+  savedQueryIds.clear();
+  savedQueryStore.hydrate([{ id: "saved-1", name: "Daily", sql: "SELECT 'saved'", updatedAt: "2026-09-07T00:00:00Z" }]);
+  for (const id of ["A-tab", "B-tab"]) savedQueryIds.set(id, "saved-1");
+  sqlDrafts.set("A-tab", "SELECT 'saved'");
+  sqlDrafts.set("B-tab", "SELECT 'B is mid-edit'");
+  await mountWorkspace();
+  fireEvent.change(editor(), { target: { value: "SELECT 'edited'" } });
+  await act(async () => { fireEvent.keyDown(window, { key: "s", code: "KeyS", metaKey: true }); });
+  await waitFor(() => expect(savedQueryStore.list()[0].sql).toBe("SELECT 'edited'"));
+
+  expect(sqlDrafts.get("B-tab")).toBe("SELECT 'B is mid-edit'");
+});
+
+it("activates an existing saved query tab instead of opening duplicates", async () => {
+  savedQueryIds.clear();
+  savedQueryStore.hydrate([{ id: "saved-1", name: "Daily", sql: "SELECT 'saved'", updatedAt: "2026-09-07T00:00:00Z" }]);
+  await mountWorkspace();
+  fireEvent.click(screen.getByTitle("저장된 쿼리"));
+  const open = () => screen.getByRole("button", { name: "Daily" });
+
+  await act(async () => { fireEvent.click(screen.getByText("SELECT 'saved'")); });
+  const savedTabId = workspaceStates.get("A")!.activeTabId!;
+  expect(workspaceStates.get("A")!.tabs).toHaveLength(2);
+
+  // Put another copy of the workspace in a different panel, then reopen the saved query.
+  await act(async () => { dispatchWorkspace("A", { type: "TAB_ADDED", tabId: "other-panel", split: true }); });
+  await act(async () => { fireEvent.click(open()); });
+  const state = workspaceStates.get("A")!;
+  expect(state.tabs).toHaveLength(3);
+  expect(state.activeTabId).toBe(savedTabId);
+  expect(getTabGroups(state).find((group) => group.tabIds.includes(savedTabId))?.activeTabId).toBe(savedTabId);
+
+  // Repeated clicks in the same panel still reuse the same tab.
+  await act(async () => { fireEvent.click(open()); });
+  expect(workspaceStates.get("A")!.tabs).toHaveLength(3);
+  expect(workspaceStates.get("A")!.activeTabId).toBe(savedTabId);
+});
+
+it("asks before closing a modified saved query and discards it when declined", async () => {
+  HTMLDialogElement.prototype.showModal = function () { this.open = true; };
+  HTMLDialogElement.prototype.close = function () { this.open = false; this.dispatchEvent(new Event("close")); };
+  savedQueryIds.clear();
+  savedQueryStore.hydrate([{ id: "saved-1", name: "Daily", sql: "SELECT 'saved'", updatedAt: "2026-09-07T00:00:00Z" }]);
+  await mountWorkspace();
+  fireEvent.click(screen.getByTitle("저장된 쿼리"));
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Daily" })); });
+  fireEvent.change(editor(), { target: { value: "SELECT 'edited'" } });
+
+  const close = screen.getByRole("button", { name: "Daily 닫기" });
+  expect(within(close).getByText("●")).toBeTruthy();
+  await act(async () => { fireEvent.keyDown(window, { key: "w", code: "KeyW", metaKey: true }); });
+  expect(openDialog("저장하지 않은 변경이 있습니다")).toBeTruthy();
+  await answerDialog("저장하지 않은 변경이 있습니다", "취소");
+  await waitFor(() => expect(workspaceStates.get("A")!.tabs).toHaveLength(1));
+  expect(savedQueryStore.find("Daily")?.sql).toBe("SELECT 'saved'");
+});
+
+it("saves a modified saved query before closing when confirmed", async () => {
+  savedQueryIds.clear();
+  savedQueryStore.hydrate([{ id: "saved-1", name: "Daily", sql: "SELECT 'saved'", updatedAt: "2026-09-07T00:00:00Z" }]);
+  await mountWorkspace();
+  fireEvent.click(screen.getByTitle("저장된 쿼리"));
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Daily" })); });
+  fireEvent.change(editor(), { target: { value: "SELECT 'edited'" } });
+  await act(async () => { fireEvent.keyDown(window, { key: "w", code: "KeyW", metaKey: true }); });
+  await answerDialog("저장하지 않은 변경이 있습니다", "확인");
+  await waitFor(() => expect(savedQueryStore.find("Daily")?.sql).toBe("SELECT 'edited'"));
+  await waitFor(() => expect(workspaceStates.get("A")!.tabs).toHaveLength(1));
+});
+
 it("shows whether a result is pinned, and a pinned result survives the next run", async () => {
   await mountWorkspace();
   await act(async () => { fireEvent.click(runButton()); });

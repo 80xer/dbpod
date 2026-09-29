@@ -15,6 +15,7 @@ import {
   savedQueryIds,
   sqlDrafts,
   sqlSelections,
+  syncSavedQueryTabs,
   dispatchWorkspace,
   subscribeWorkspace,
   resultIds,
@@ -41,10 +42,13 @@ import { displayShortcut, shortcutDigit, shortcutMatches, type ShortcutId } from
 
 import { WorkspacePane } from "./WorkspacePane";
 
-const tabBtn = (active: boolean) =>
+// The open tab reads as a notch cut out of the strip below it, so it carries the
+// strip's own border: grey while the panel sits idle, and the focus colour once the
+// panel has the keyboard, which is what says where a keystroke will land.
+const tabBtn = (active: boolean, focused: boolean) =>
   `group flex shrink-0 items-center gap-1 rounded-t border-x border-t px-2 py-1 text-xs ${
     active
-      ? "border-gray-300 bg-white font-medium"
+      ? `bg-white font-medium ${focused ? "border-blue-400" : "border-gray-300"}`
       : "border-transparent bg-gray-100 text-gray-600 hover:bg-gray-200"
   }`;
 
@@ -78,6 +82,7 @@ function WorkspaceContent({ connectionId }: { connectionId: string }) {
   }, [state.tabs.length, dispatch]);
 
   const [notice, setNotice] = useState("");
+  const [dirtyTabs, setDirtyTabs] = useState<Set<string>>(() => new Set());
   // Kept apart from `notice`: a confirmation is worth a glance, an error stays put.
   const [toast, setToast] = useState<{ text: string; at: number } | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -110,38 +115,88 @@ function WorkspaceContent({ connectionId }: { connectionId: string }) {
     focusActiveEditor();
   }, [dispatch, focusActiveEditor]);
   const openSqlInNewTab = useCallback((sql: string, title?: string, savedQueryId?: string) => {
+    const normalizedSql = sql.trim();
+    const existing = normalizedSql && workspaceStates.get(connectionId)?.tabs.find((tab) =>
+      tab.kind === "query" && (
+        (savedQueryId !== undefined && savedQueryIds.get(tab.id) === savedQueryId) ||
+        (sqlDrafts.get(tab.id) ?? "").trim() === normalizedSql
+      ),
+    );
+    if (existing) {
+      dispatchAndFocusEditor({ type: "TAB_ACTIVATED", tabId: existing.id });
+      return;
+    }
     const tabId = crypto.randomUUID();
     sqlDrafts.set(tabId, sql);
     if (savedQueryId) savedQueryIds.set(tabId, savedQueryId);
-    dispatch({ type: "TAB_ADDED", tabId, title });
+    dispatchAndFocusEditor({ type: "TAB_ADDED", tabId, title });
+  }, [connectionId, dispatchAndFocusEditor]);
+
+  const noteSqlChanged = useCallback((tabId: string, sql: string) => {
+    const saved = savedQueryStore.list().find((entry) => entry.id === savedQueryIds.get(tabId));
+    const dirty = Boolean(saved && saved.sql !== sql);
+    setDirtyTabs((current) => {
+      if (current.has(tabId) === dirty) return current;
+      const next = new Set(current);
+      if (dirty) next.add(tabId);
+      else next.delete(tabId);
+      return next;
+    });
+  }, []);
+
+  const isDirtyQuery = useCallback((tab: QueryTabState) => {
+    if (tab.kind !== "query") return false;
+    const saved = savedQueryStore.list().find((entry) => entry.id === savedQueryIds.get(tab.id));
+    return dirtyTabs.has(tab.id) || Boolean(saved && saved.sql !== (sqlDrafts.get(tab.id) ?? ""));
+  }, [dirtyTabs]);
+
+  const saveQueryTab = useCallback(async (tab: QueryTabState): Promise<boolean> => {
+    if (tab.kind !== "query") return false;
+    const sql = sqlDrafts.get(tab.id) ?? "";
+    if (!sql.trim()) {
+      setNotice("저장할 SQL이 없습니다.");
+      return false;
+    }
+    const bound = savedQueryStore.list().find((entry) => entry.id === savedQueryIds.get(tab.id));
+    let name = bound?.name;
+    let previous = bound;
+    if (!name) {
+      name = (await promptText("저장할 이름", tab.title))?.trim();
+      if (!name) return false;
+      const clash = savedQueryStore.find(name);
+      if (clash && !(await confirmDialog(`"${clash.name}"을(를) 덮어쓸까요?`))) return false;
+      previous = clash;
+    }
+    try {
+      const saved = await savedQueryStore.save(name, sql);
+      savedQueryIds.set(tab.id, saved.id);
+      // The same query can be open in another connection, holding what the entry said
+      // a moment ago. Those tabs follow this save; a tab with its own edits does not.
+      for (const movedTabId of syncSavedQueryTabs(saved.id, saved.sql, previous?.sql, tab.id)) {
+        const view = editorViews.current.get(movedTabId);
+        view?.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: saved.sql } });
+      }
+      saveWorkspaceSoon();
+      setDirtyTabs((current) => {
+        if (!current.has(tab.id)) return current;
+        const next = new Set(current);
+        next.delete(tab.id);
+        return next;
+      });
+      dispatch({ type: "TAB_RENAMED", tabId: tab.id, title: saved.name });
+      setToast({ text: `'${saved.name}' 저장됨`, at: Date.now() });
+      return true;
+    } catch (error) {
+      setNotice(`저장하지 못했습니다: ${(error as { message?: string }).message ?? String(error)}`);
+      return false;
+    }
   }, [dispatch]);
 
   /** A tab already bound to a saved query overwrites it; anything else is named first. */
   const saveCurrentQuery = useCallback(async () => {
     const tab = workspaceStates.get(connectionId)?.tabs.find((t) => t.id === workspaceStates.get(connectionId)?.activeTabId);
-    if (!tab || tab.kind !== "query") return;
-    const sql = sqlDrafts.get(tab.id) ?? "";
-    if (!sql.trim()) {
-      setNotice("저장할 SQL이 없습니다.");
-      return;
-    }
-    const bound = savedQueryStore.list().find((entry) => entry.id === savedQueryIds.get(tab.id));
-    let name = bound?.name;
-    if (!name) {
-      name = (await promptText("저장할 이름", tab.title))?.trim();
-      if (!name) return;
-      const clash = savedQueryStore.find(name);
-      if (clash && !(await confirmDialog(`"${clash.name}"을(를) 덮어쓸까요?`))) return;
-    }
-    try {
-      const saved = await savedQueryStore.save(name, sql);
-      savedQueryIds.set(tab.id, saved.id);
-      dispatch({ type: "TAB_RENAMED", tabId: tab.id, title: saved.name });
-      setToast({ text: `'${saved.name}' 저장됨`, at: Date.now() });
-    } catch (error) {
-      setNotice(`저장하지 못했습니다: ${(error as { message?: string }).message ?? String(error)}`);
-    }
-  }, [connectionId, dispatch]);
+    if (tab) await saveQueryTab(tab);
+  }, [connectionId, saveQueryTab]);
   saveCurrentQueryRef.current = saveCurrentQuery;
   const addQueryTab = useCallback((split = false, groupId?: string) => {
     dispatchAndFocusEditor({ type: "TAB_ADDED", tabId: crypto.randomUUID(), split, groupId });
@@ -408,7 +463,14 @@ function WorkspaceContent({ connectionId }: { connectionId: string }) {
     for (const id of resultIds(tab)) resultStore.dispose(id);
     tableDataViews.delete(tab.id);
     sqlDrafts.delete(tab.id);
+    savedQueryIds.delete(tab.id);
     sqlSelections.delete(tab.id);
+    setDirtyTabs((current) => {
+      if (!current.has(tab.id)) return current;
+      const next = new Set(current);
+      next.delete(tab.id);
+      return next;
+    });
   };
   const closeResultTab = async (tab: QueryTabState, resultTabId: string) => {
     const r = tab.resultTabs.find((x) => x.id === resultTabId);
@@ -423,6 +485,11 @@ function WorkspaceContent({ connectionId }: { connectionId: string }) {
   };
 
   const closeQueryTabs = async (tabs: QueryTabState[]) => {
+    for (const tab of tabs) {
+      if (!isDirtyQuery(tab)) continue;
+      if (!(await confirmDialog(`'${tab.title}'에 저장하지 않은 변경이 있습니다. 저장할까요?`))) continue;
+      if (!(await saveQueryTab(tab))) return;
+    }
     if (await protectedTabs(tabs)) return;
     try {
       for (const tab of tabs) {
@@ -632,7 +699,7 @@ function WorkspaceContent({ connectionId }: { connectionId: string }) {
                   {group.tabIds.map((id) => {
                     const item = state.tabs.find((t) => t.id === id)!;
                     return (
-                      <div key={id} className={tabBtn(id === group.activeTabId)}>
+                      <div key={id} className={tabBtn(id === group.activeTabId, focused)}>
                         <button
                           type="button"
                           role="tab"
@@ -644,7 +711,15 @@ function WorkspaceContent({ connectionId }: { connectionId: string }) {
                         >
                           {item.runningExecutionId ? "⏳ " : ""}{item.title}
                         </button>
-                        <button type="button" aria-label={`${item.title} 닫기`} onClick={() => void closeQueryTabs([item])} className="rounded px-0.5 text-gray-400 hover:bg-gray-300 hover:text-gray-700">×</button>
+                        <button
+                          type="button"
+                          aria-label={`${item.title} 닫기`}
+                          title={isDirtyQuery(item) ? "저장하지 않은 변경 있음 — 닫기" : "탭 닫기"}
+                          onClick={() => void closeQueryTabs([item])}
+                          className="group/close rounded px-0.5 text-gray-400 hover:bg-gray-300 hover:text-gray-700"
+                        >
+                          {isDirtyQuery(item) ? <><span aria-hidden className="text-blue-600 group-hover/close:hidden">●</span><span aria-hidden className="hidden group-hover/close:inline">×</span></> : "×"}
+                        </button>
                       </div>
                     );
                   })}
@@ -667,6 +742,7 @@ function WorkspaceContent({ connectionId }: { connectionId: string }) {
                     dispatch={dispatch}
                     onRun={(mode) => void run(mode, tab)}
                     onCancel={() => cancel(tab)}
+                    onSqlChanged={noteSqlChanged}
                     onViewReady={(view) => {
                       if (view) {
                         editorViews.current.set(tab.id, view);

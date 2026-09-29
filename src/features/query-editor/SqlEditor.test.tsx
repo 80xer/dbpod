@@ -42,7 +42,37 @@ it.each([
   view.dispatch({ changes: { from: pos + 1, to: pos + 2 }, selection: { anchor: pos + 1 }, userEvent: "delete.backward" });
   await waitFor(() => expect(labels()).toEqual(["clsg_ym", "comp_cd"]));
   view.dispatch({ changes: { from: pos + 1, insert: "p" }, selection: { anchor: pos + 2 }, userEvent: "input.type" });
-  expect(labels()).toEqual([]); // "cp" must not fuzzy-match "comp_cd".
+  // Two letters stay strict: with this little to go on, a scattered match is noise.
+  expect(labels()).toEqual([]);
+});
+
+it.each([
+  // Letters the name has in order, scattered: the ordinary way a half-remembered
+  // column gets typed.
+  ["cym", ["clsg_ym"]],
+  ["cpc", ["comp_cd"]],
+  // The initials of the underscore-joined parts.
+  ["scd", ["stk_cd"]],
+  // Letters the name does not have, or has out of order, still match nothing.
+  ["czz", []],
+  ["mc", []],
+] as const)("completes columns on scattered letters, not only on a prefix: %s", async (typed, expected) => {
+  let view!: EditorView;
+  const source = "SELECT  FROM cms.fnn_fy_his;";
+  const pos = source.indexOf(" FROM");
+  render(<SqlEditor initialSql={source} connectionId="completion" database="postgres"
+    onViewReady={(next) => { if (next) view = next; }} />);
+  view.dispatch({ changes: { from: pos, insert: typed }, selection: { anchor: pos + typed.length }, userEvent: "input.type" });
+  await waitFor(() => expect(currentCompletions(view.state).map((option) => option.label).sort()).toEqual([...expected]));
+});
+
+it("completes a table on the initials of its underscore-joined parts", async () => {
+  let view!: EditorView;
+  const source = "SELECT * FROM cms.";
+  render(<SqlEditor initialSql={source} connectionId="completion" database="postgres"
+    onViewReady={(next) => { if (next) view = next; }} />);
+  view.dispatch({ changes: { from: source.length, insert: "ffh" }, selection: { anchor: source.length + 3 }, userEvent: "input.type" });
+  await waitFor(() => expect(currentCompletions(view.state).map((option) => option.label)).toEqual(["fnn_fy_his"]));
 });
 
 it.each([

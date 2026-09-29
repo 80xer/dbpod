@@ -17,11 +17,12 @@ type Props = {
   dispatch: (action: WorkspaceAction) => void;
   onRun: (mode: "replace" | "new-result") => void;
   onCancel: () => void;
+  onSqlChanged: (tabId: string, sql: string) => void;
   onViewReady: (view: EditorView | null) => void;
   onCloseResult: (resultTabId: string) => void;
 };
 
-export function WorkspacePane({ connectionId, database, tab, readOnly, dispatch, onRun, onCancel, onViewReady, onCloseResult }: Props) {
+export function WorkspacePane({ connectionId, database, tab, readOnly, dispatch, onRun, onCancel, onSqlChanged, onViewReady, onCloseResult }: Props) {
   const [editorShare, setEditorShare] = useState(40);
   const editorPaneId = useId();
   const queryLayoutRef = useRef<HTMLDivElement>(null);
@@ -57,6 +58,7 @@ export function WorkspacePane({ connectionId, database, tab, readOnly, dispatch,
               onViewReady={onViewReady}
               onDocChanged={(doc) => {
                 sqlDrafts.set(tab.id, doc);
+                onSqlChanged(tab.id, doc);
                 saveWorkspaceSoon();
               }}
             />

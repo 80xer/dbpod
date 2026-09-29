@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { aiModels, appFonts, appFontSizes, resetAppSettings, setAppSettings, useAppSettings, type AiProvider, type AppTheme } from "../../entities/settings/appSettings";
-import { displayShortcut, shortcutDefinitions, shortcutFromEvent, shortcutGroups, shortcutMatches, shortcutScope, shortcutsConflict, type ShortcutId } from "../../entities/settings/shortcuts";
+import { displayShortcut, shortcutDefinitions, shortcutFromEvent, shortcutGroups, shortcutMatches, shortcutScope, shortcutsConflict, UNBOUND, type ShortcutId } from "../../entities/settings/shortcuts";
 import { useCanGoBack, useNavigate, useRouter } from "@tanstack/react-router";
 
 const selectClass = "mt-1 w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm";
@@ -30,6 +30,14 @@ export function SettingsPage() {
     const handleKeyDown = (event: KeyboardEvent) => {
       event.preventDefault();
       event.stopPropagation();
+      // Backspace clears instead of binding: it is where people reach to remove one,
+      // and the recorder is the only place a shortcut can be changed at all.
+      if (["Backspace", "Delete"].includes(event.key)) {
+        setAppSettings({ shortcuts: { ...settings.shortcuts, [recording]: UNBOUND } });
+        setRecording(null);
+        setShortcutError("");
+        return;
+      }
       const shortcut = shortcutFromEvent(event, recording === "tabByNumber");
       if (!shortcut) return;
       // Two panes that never receive the same keystroke may share a binding.
@@ -53,7 +61,10 @@ export function SettingsPage() {
       <div className="mb-6 flex items-center justify-between">
         <div>
           <h2 className="text-lg font-semibold">설정</h2>
-          <p className="mt-1 text-sm text-gray-500">변경 사항은 즉시 적용되고 이 기기에 저장됩니다. {displayShortcut(settings.shortcuts.closeTab)}로 닫습니다.</p>
+          <p className="mt-1 text-sm text-gray-500">
+            변경 사항은 즉시 적용되고 이 기기에 저장됩니다.
+            {settings.shortcuts.closeTab !== UNBOUND && ` ${displayShortcut(settings.shortcuts.closeTab)}로 닫습니다.`}
+          </p>
         </div>
         <button type="button" onClick={resetAppSettings} className="rounded border border-gray-300 px-3 py-1.5 text-sm hover:bg-gray-50">기본값 복원</button>
       </div>
@@ -110,7 +121,7 @@ export function SettingsPage() {
 
       <section aria-labelledby="shortcuts-heading" className="mt-5 rounded-lg border border-gray-200 bg-white p-5">
         <h3 id="shortcuts-heading" className="font-semibold">단축키</h3>
-        <p className="mt-1 text-sm text-gray-500">단축키 버튼을 선택한 뒤 사용할 키 조합을 누르세요.</p>
+        <p className="mt-1 text-sm text-gray-500">단축키 버튼을 선택한 뒤 사용할 키 조합을 누르세요. 해제하려면 Backspace를 누르거나 해제 버튼을 사용하세요.</p>
         {shortcutError && <p role="alert" className="mt-2 text-sm text-red-600">{shortcutError}</p>}
         {shortcutGroups.map((group) => (
           <div key={group} className="mt-4">
@@ -119,14 +130,30 @@ export function SettingsPage() {
               {shortcutDefinitions.filter((definition) => definition.group === group).map(({ id, label }) => (
                 <div key={id} className="flex items-center justify-between gap-4 py-2">
                   <span className="text-sm">{label}</span>
-                  <button
-                    type="button"
-                    aria-label={`${label} 단축키`}
-                    onClick={() => { setRecording(id); setShortcutError(""); }}
-                    className={`min-w-36 rounded border px-3 py-1.5 text-right font-mono text-sm ${recording === id ? "border-blue-500 bg-blue-50 ring-1 ring-blue-500" : "border-gray-300 hover:bg-gray-50"}`}
-                  >
-                    {recording === id ? "새 단축키 입력…" : displayShortcut(settings.shortcuts[id])}
-                  </button>
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      aria-label={`${label} 단축키`}
+                      onClick={() => { setRecording(id); setShortcutError(""); }}
+                      className={`min-w-36 rounded border px-3 py-1.5 text-right font-mono text-sm ${recording === id ? "border-blue-500 bg-blue-50 ring-1 ring-blue-500" : "border-gray-300 hover:bg-gray-50"} ${settings.shortcuts[id] === UNBOUND && recording !== id ? "text-gray-400" : ""}`}
+                    >
+                      {recording === id ? "새 단축키 입력…" : displayShortcut(settings.shortcuts[id])}
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={`${label} 단축키 해제`}
+                      title="단축키 해제"
+                      disabled={settings.shortcuts[id] === UNBOUND}
+                      onClick={() => {
+                        setAppSettings({ shortcuts: { ...settings.shortcuts, [id]: UNBOUND } });
+                        setRecording(null);
+                        setShortcutError("");
+                      }}
+                      className="rounded border border-gray-300 px-2 py-1.5 text-sm text-gray-500 hover:bg-gray-50 disabled:opacity-30 disabled:hover:bg-transparent"
+                    >
+                      ✕
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
