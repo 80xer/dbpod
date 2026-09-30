@@ -106,6 +106,22 @@ export type DatabaseInfo = { name: string, canConnect: boolean, };
 
 export type SchemaInfo = { oid: number, name: string, isSystem: boolean, };
 
+export type SqlKeyword = { word: string, 
+/**
+ * `catdesc`: reserved, unreserved, and the two partially reserved kinds.
+ */
+category: string, };
+
+export type SqlWords = { keywords: Array<SqlKeyword>, 
+/**
+ * Distinct names of callable functions and procedures on the search path.
+ */
+functions: Array<string>, 
+/**
+ * Names of data types on the search path, arrays excluded.
+ */
+types: Array<string>, };
+
 export type ObjectKind = "table" | "view" | "materialized-view" | "function" | "sequence";
 
 export type MetadataListObjectsRequest = { connectionId: string, schemaOids: Array<number>, kinds: Array<ObjectKind>, };

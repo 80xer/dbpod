@@ -6,6 +6,8 @@ import { statementAt, stripLiterals } from "./statementSplitter";
 type Catalog = { schema: string; name: string; oid: number; kind: string };
 const catalogCache = new Map<string, Promise<Catalog[]>>();
 const columnsCache = new Map<string, Promise<string[]>>();
+type Words = { lower: Completion[]; upper: Completion[] };
+const wordsCache = new Map<string, Promise<Words>>();
 
 function unquote(value: string): string { return value.replace(/^"|"$/g, ""); }
 
@@ -16,6 +18,7 @@ function unquote(value: string): string { return value.replace(/^"|"$/g, ""); }
 export function clearCompletionCache(connectionId: string): void {
   for (const key of [...catalogCache.keys()]) if (key.startsWith(`${connectionId}:`)) catalogCache.delete(key);
   for (const key of [...columnsCache.keys()]) if (key.startsWith(`${connectionId}:`)) columnsCache.delete(key);
+  for (const key of [...wordsCache.keys()]) if (key.startsWith(`${connectionId}:`)) wordsCache.delete(key);
 }
 
 async function catalog(connectionId: string, database: string): Promise<Catalog[]> {
@@ -27,6 +30,29 @@ async function catalog(connectionId: string, database: string): Promise<Catalog[
       return objects.map((o) => ({ schema: o.schema, name: o.name, oid: o.oid, kind: o.kind }));
     });
     catalogCache.set(key, pending);
+  }
+  return pending;
+}
+
+/**
+ * The server's keywords, callable functions and types. The first entry of a word
+ * wins, so a word that is both a keyword and a function (`left`) shows once.
+ * boost -1 keeps them under an equally good column match.
+ */
+async function sqlWords(connectionId: string, database: string): Promise<Words> {
+  const key = `${connectionId}:${database}`;
+  let pending = wordsCache.get(key);
+  if (!pending) {
+    pending = ipc.metadataListSqlWords({ connectionId }).then(({ keywords, functions, types }) => {
+      const seen = new Set<string>();
+      const lower = [
+        ...keywords.map((k) => ({ label: k.word, detail: k.category, type: "keyword" })),
+        ...functions.map((label) => ({ label, detail: "function", type: "function" })),
+        ...types.map((label) => ({ label, detail: "type", type: "type" })),
+      ].filter((option) => !seen.has(option.label) && seen.add(option.label)).map((option) => ({ ...option, boost: -1 }));
+      return { lower, upper: lower.map((option) => ({ ...option, label: option.label.toUpperCase() })) };
+    });
+    wordsCache.set(key, pending);
   }
   return pending;
 }
@@ -95,10 +121,16 @@ export function sqlCompletionSource(connectionId: string, database: string) {
     }
     // FROM can follow the SELECT being edited, so inspect the whole statement.
     const referenced = references(statementText, items);
-    if (!referenced.length) return null;
     const columns = (await Promise.all(referenced.map((reference) => tableColumns(connectionId, database, reference.table.oid)))).flat();
-    const word = context.matchBefore(/[\w$]*/);
-    return result(word?.from ?? context.pos, options([...new Set(columns)].map((label) => ({ label, detail: "column" }))));
+    const words = await sqlWords(connectionId, database);
+    const from = context.matchBefore(/[\w$]*/)?.from ?? context.pos;
+    const typed = context.state.sliceDoc(from, context.pos);
+    // A quote opens an identifier, which a keyword never is, and whose name is
+    // taken as written. Words follow the case being typed: `SEL` completes to
+    // SELECT, `sel` to select.
+    const wordOptions = context.state.sliceDoc(from - 1, from) === '"' ? []
+      : /[A-Z]/.test(typed) && !/[a-z]/.test(typed) ? words.upper : words.lower;
+    return result(from, [...options([...new Set(columns)].map((label) => ({ label, detail: "column" }))), ...wordOptions]);
   };
 }
 

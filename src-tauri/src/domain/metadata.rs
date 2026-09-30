@@ -23,6 +23,26 @@ pub struct SchemaInfo {
     pub is_system: bool,
 }
 
+/// A keyword of the connected server's SQL grammar, as `pg_get_keywords()` lists it.
+#[derive(Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SqlKeyword {
+    pub word: String,
+    /// `catdesc`: reserved, unreserved, and the two partially reserved kinds.
+    pub category: String,
+}
+
+/// Words the SQL editor completes without a qualifier, all from the connected server.
+#[derive(Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SqlWords {
+    pub keywords: Vec<SqlKeyword>,
+    /// Distinct names of callable functions and procedures on the search path.
+    pub functions: Vec<String>,
+    /// Names of data types on the search path, arrays excluded.
+    pub types: Vec<String>,
+}
+
 #[derive(Debug, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct MetadataListObjectsRequest {

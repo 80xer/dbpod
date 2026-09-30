@@ -836,6 +836,14 @@ pub async fn metadata_get_view_definition(
 }
 
 #[tauri::command]
+pub async fn metadata_list_sql_words(
+    state: State<'_, AppState>,
+    connection_id: String,
+) -> Result<crate::domain::metadata::SqlWords, AppError> {
+    crate::application::metadata_service::list_sql_words(&state, &connection_id).await
+}
+
+#[tauri::command]
 pub async fn metadata_get_table(
     state: State<'_, AppState>,
     request: crate::domain::metadata::MetadataGetTableRequest,

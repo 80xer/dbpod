@@ -396,6 +396,61 @@ pub async fn get_routine_definition(
     .await
 }
 
+/// Keywords, functions and types of the connected server, for editor completion.
+/// Asking the server keeps the lists to its own grammar and version rather than
+/// every SQL dialect's words, and includes the database's own functions and types.
+/// Functions nobody calls by name are left out: operator implementations, type I/O,
+/// and anything taking or returning an internal pseudo-type (handlers, support).
+pub async fn list_sql_words(
+    state: &AppState,
+    connection_id: &str,
+) -> Result<crate::domain::metadata::SqlWords, AppError> {
+    with_control(state, connection_id, |conn| {
+        Box::pin(async move {
+            let keywords: Vec<(String, String)> =
+                sqlx::query_as("SELECT word, catdesc FROM pg_get_keywords() ORDER BY word")
+                    .fetch_all(&mut *conn)
+                    .await
+                    .map_err(|e| AppError::from_sqlx(&e))?;
+            let functions: Vec<String> = sqlx::query_scalar(
+                "SELECT DISTINCT p.proname::text FROM pg_proc p \
+                 LEFT JOIN pg_description d ON d.objoid = p.oid AND d.classoid = 'pg_proc'::regclass \
+                 WHERE pg_function_is_visible(p.oid) AND p.prokind IN ('f', 'a', 'w', 'p') \
+                   AND p.prorettype NOT IN ('internal'::regtype, 'trigger'::regtype, \
+                       'event_trigger'::regtype, 'language_handler'::regtype, \
+                       'index_am_handler'::regtype, 'table_am_handler'::regtype, \
+                       'fdw_handler'::regtype, 'tsm_handler'::regtype) \
+                   AND NOT 'internal'::regtype = ANY (p.proargtypes) \
+                   AND NOT EXISTS (SELECT 1 FROM pg_operator o WHERE o.oprcode = p.oid) \
+                   AND coalesce(d.description, '') NOT LIKE 'I/O%' \
+                   AND coalesce(d.description, '') NOT LIKE 'implementation of %' \
+                 ORDER BY 1",
+            )
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|e| AppError::from_sqlx(&e))?;
+            let types: Vec<String> = sqlx::query_scalar(
+                "SELECT DISTINCT t.typname::text FROM pg_type t \
+                 WHERE pg_type_is_visible(t.oid) AND t.typtype IN ('b', 'd', 'e', 'r', 'm') \
+                   AND t.typcategory <> 'P' AND t.typname !~ '^_' \
+                 ORDER BY 1",
+            )
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|e| AppError::from_sqlx(&e))?;
+            Ok(crate::domain::metadata::SqlWords {
+                keywords: keywords
+                    .into_iter()
+                    .map(|(word, category)| crate::domain::metadata::SqlKeyword { word, category })
+                    .collect(),
+                functions,
+                types,
+            })
+        })
+    })
+    .await
+}
+
 /// Options that change a view's permission or row-filtering semantics. Only these
 /// are replayed; values are catalog-normalized words, checked before splicing.
 const VIEW_OPTIONS: [&str; 3] = ["check_option", "security_barrier", "security_invoker"];

@@ -288,6 +288,88 @@ async fn view_scripts_quote_catalog_names_and_recreate_the_same_view() {
         .is_err());
 }
 
+#[tokio::test]
+async fn completion_words_come_from_the_server_and_leave_out_internal_functions() {
+    use dbpod_lib::application::metadata_service;
+    use sqlx::Connection;
+
+    let (_node, state) = setup().await;
+    let opts = state.workspaces.lock().unwrap()[CONN_ID]
+        .connect_opts
+        .clone();
+    let mut admin = sqlx::PgConnection::connect_with(&opts).await.unwrap();
+    sqlx::raw_sql(
+        "CREATE FUNCTION public.shipping_fee(int) RETURNS int LANGUAGE sql AS 'SELECT $1'; \
+         CREATE SCHEMA hidden; \
+         CREATE FUNCTION hidden.not_on_path() RETURNS int LANGUAGE sql AS 'SELECT 1'; \
+         CREATE TYPE public.order_state AS ENUM ('open', 'closed')",
+    )
+    .execute(&mut admin)
+    .await
+    .unwrap();
+    let words = metadata_service::list_sql_words(&state, CONN_ID)
+        .await
+        .unwrap();
+    let category = |word: &str| {
+        words
+            .keywords
+            .iter()
+            .find(|k| k.word == word)
+            .map(|k| k.category.as_str())
+    };
+    assert_eq!(category("select"), Some("reserved"));
+    assert_eq!(category("vacuum"), Some("unreserved"));
+    // SQL-standard words PostgreSQL does not use would crowd real ones out of
+    // completion: "self" would be offered ahead of "select" for "sel".
+    assert_eq!(category("self"), None);
+
+    let function = |name: &str| words.functions.iter().any(|f| f == name);
+    for callable in [
+        "string_to_array",
+        "array_agg",
+        "row_number",
+        "now",
+        "shipping_fee",
+    ] {
+        assert!(function(callable), "{callable} is missing");
+    }
+    // Operator implementations, type I/O, handlers and other schemas' functions
+    // are not called by an unqualified name.
+    for hidden in [
+        "int4pl",
+        "textout",
+        "boolin",
+        "plpgsql_call_handler",
+        "not_on_path",
+    ] {
+        assert!(!function(hidden), "{hidden} is listed");
+    }
+    assert_eq!(
+        words
+            .functions
+            .iter()
+            .filter(|f| *f == "generate_series")
+            .count(),
+        1
+    );
+
+    for name in ["jsonb", "uuid", "timestamptz", "order_state"] {
+        assert!(
+            words.types.iter().any(|t| t == name),
+            "type {name} is missing"
+        );
+    }
+    assert!(!words
+        .types
+        .iter()
+        .any(|t| t.starts_with('_') || t == "internal"));
+    assert!(
+        metadata_service::list_sql_words(&state, "no-such-connection")
+            .await
+            .is_err()
+    );
+}
+
 fn sink_channel() -> (EventSink, UnboundedReceiver<QueryStreamEvent>) {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let sink: EventSink = Arc::new(move |e| tx.send(e).is_ok());

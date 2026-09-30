@@ -438,6 +438,29 @@ type MetadataGetViewDefinitionResponse = string
 
 뷰의 `reloptions` 중 권한·행 필터링 의미를 바꾸는 `security_invoker`·`security_barrier`·`check_option`만 allowlist로 `WITH (...)`에 복원한다. 값은 영숫자 토큰만 허용한다. 그 외 옵션, materialized view 저장 옵션, tablespace, 인덱스, 권한, 코멘트는 포함하지 않는다. 뷰가 아니거나 없으면 오류를 반환한다. UI는 뷰 탭의 `Script` 모드에서 읽기 전용으로 표시하고 새로고침·재시도를 제공한다. 캐시 키가 연결 ID를 포함하므로 DB 전환 시 정리된다.
 
+### 8.6 `metadata_list_sql_words`
+
+```ts
+// IPC 최상위 인자
+type MetadataListSqlWordsArgs = {
+  connectionId: string
+}
+
+type SqlWords = {
+  keywords: { word: string; category: string }[] // pg_get_keywords()의 word·catdesc
+  functions: string[]
+  types: string[]
+}
+```
+
+SQL 편집기의 한정자 없는 자동완성 단어를 현재 연결 서버에서 가져온다. 고정 SQL만 실행하며 사용자 입력을 SQL에 넣지 않는다.
+
+- `keywords`: `pg_get_keywords()` 전체. 서버 버전의 문법만 포함하므로 PostgreSQL이 쓰지 않는 SQL 표준 단어(`self` 등)는 없다.
+- `functions`: search path에서 보이는 함수·집계·윈도 함수·프로시저 이름(중복 제거). 연산자 구현, 타입 I/O, `internal`·트리거·핸들러 타입을 받거나 반환하는 함수는 제외한다.
+- `types`: search path에서 보이는 base·domain·enum·range·multirange 타입. 배열(`_` 접두)과 pseudo-type은 제외한다.
+
+UI는 연결·DB별로 캐시하고 새로고침 시 비운다. 컬럼 후보와 같은 품질로 일치하면 컬럼을 먼저 보이고, 입력이 모두 대문자면 대문자로 제안한다. 따옴표로 시작한 식별자와 `schema.` 뒤에서는 제안하지 않는다.
+
 ## 9. Query session
 
 ### 9.1 `query_session_open`

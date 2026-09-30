@@ -18,9 +18,19 @@ vi.mock("../../shared/ipc/invoke", () => ({ ipc: {
       : relationOid === 30 ? ["ext_col"]
       : ["created_at", "rpt_std_dt"]).map((name) => ({ name })),
   })),
+  metadataListSqlWords: vi.fn(async () => ({
+    keywords: [["case", "reserved"], ["left", "reserved (can be function or type)"], ["select", "reserved"], ["when", "reserved"], ["where", "reserved"]]
+      .map(([word, category]) => ({ word, category })),
+    functions: ["left", "string_agg", "string_to_array"],
+    types: ["json", "jsonb"],
+  })),
 } }));
 
 afterEach(cleanup);
+
+/** Column suggestions only: keywords match most letters too, and are covered on their own. */
+const columnLabels = (view: EditorView) =>
+  currentCompletions(view.state).filter((option) => option.detail === "column").map((option) => option.label);
 
 it.each([
   "SELECT | FROM cms.fnn_fy_his;",
@@ -35,7 +45,7 @@ it.each([
   render(<SqlEditor initialSql={source.replace("|", "")} connectionId="completion" database="postgres"
     onViewReady={(next) => { if (next) view = next; }} />);
   view.dispatch({ changes: { from: pos, insert: "c" }, selection: { anchor: pos + 1 }, userEvent: "input.type" });
-  const labels = () => currentCompletions(view.state).map((option) => option.label).sort();
+  const labels = () => columnLabels(view).sort();
   // stk_cd has its c past the start, and still answers a single typed c.
   await waitFor(() => expect(labels()).toEqual(["clsg_ym", "comp_cd", "stk_cd"]));
   view.dispatch({ changes: { from: pos + 1, insert: "o" }, selection: { anchor: pos + 2 }, userEvent: "input.type" });
@@ -67,7 +77,7 @@ it.each([
   render(<SqlEditor initialSql={source} connectionId="completion" database="postgres"
     onViewReady={(next) => { if (next) view = next; }} />);
   view.dispatch({ changes: { from: pos, insert: typed }, selection: { anchor: pos + typed.length }, userEvent: "input.type" });
-  await waitFor(() => expect(currentCompletions(view.state).map((option) => option.label).sort()).toEqual([...expected]));
+  await waitFor(() => expect(columnLabels(view).sort()).toEqual([...expected]));
 });
 
 it.each([
@@ -80,7 +90,7 @@ it.each([
   render(<SqlEditor initialSql={source} connectionId="completion" database="postgres"
     onViewReady={(next) => { if (next) view = next; }} />);
   view.dispatch({ changes: { from: pos, insert: typed }, selection: { anchor: pos + typed.length }, userEvent: "input.type" });
-  await waitFor(() => expect(currentCompletions(view.state).map((option) => option.label)).toEqual([...expected]));
+  await waitFor(() => expect(columnLabels(view)).toEqual([...expected]));
 });
 
 it("accepts the selected completion with Tab, and indents when no list is open", async () => {
@@ -176,7 +186,45 @@ it.each([
   render(<SqlEditor initialSql={source.replace("|", "")} connectionId="completion" database="postgres"
     onViewReady={(next) => { if (next) view = next; }} />);
   view.dispatch({ changes: { from: pos, insert }, selection: { anchor: pos + insert.length }, userEvent: "input.type" });
-  await waitFor(() => expect(currentCompletions(view.state).map((option) => option.label).sort()).toEqual(expected));
+  // Dot completion lists only the qualified names; typed letters also list keywords.
+  const labels = () => (insert === "." ? currentCompletions(view.state).map((option) => option.label) : columnLabels(view)).sort();
+  await waitFor(() => expect(labels()).toEqual(expected));
+});
+
+it.each([
+  ["", "sel", "select", "reserved"],
+  ["", "SEL", "SELECT", "reserved"],
+  ["SELECT * FROM cms.fnn_fy_his ", "wher", "where", "reserved"],
+  ["SELECT ", "string_to", "string_to_array", "function"],
+  ["SELECT ", "STRING_TO", "STRING_TO_ARRAY", "function"],
+  ["SELECT id::", "jso", "json", "type"],
+] as const)("completes the server's keywords, functions and types in the typed case: %s%s", async (source, typed, first, detail) => {
+  let view!: EditorView;
+  render(<SqlEditor initialSql={source} connectionId="completion" database="postgres"
+    onViewReady={(next) => { if (next) view = next; }} />);
+  view.dispatch({ changes: { from: source.length, insert: typed }, selection: { anchor: source.length + typed.length }, userEvent: "input.type" });
+  await waitFor(() => expect(currentCompletions(view.state)[0]).toMatchObject({ label: first, detail }));
+});
+
+it("lists a word that is both a keyword and a function once", async () => {
+  let view!: EditorView;
+  render(<SqlEditor initialSql="SELECT " connectionId="completion" database="postgres"
+    onViewReady={(next) => { if (next) view = next; }} />);
+  view.dispatch({ changes: { from: 7, insert: "lef" }, selection: { anchor: 10 }, userEvent: "input.type" });
+  await waitFor(() => expect(currentCompletions(view.state).filter((option) => option.label === "left")).toHaveLength(1));
+});
+
+it("lists a column before a keyword that matches it equally well, and no keyword inside quotes", async () => {
+  let view!: EditorView;
+  const source = "SELECT * FROM cms.fnn_fy_his WHERE ";
+  render(<SqlEditor initialSql={source} connectionId="completion" database="postgres"
+    onViewReady={(next) => { if (next) view = next; }} />);
+  view.dispatch({ changes: { from: source.length, insert: "c" }, selection: { anchor: source.length + 1 }, userEvent: "input.type" });
+  // clsg_ym and case both match c at their first letter; the column goes first.
+  await waitFor(() => expect(currentCompletions(view.state).slice(0, 2).map((option) => option.detail)).toEqual(["column", "column"]));
+  expect(currentCompletions(view.state).map((option) => option.label)).toContain("case");
+  view.dispatch({ changes: { from: source.length, to: source.length + 1, insert: '"c' }, selection: { anchor: source.length + 2 }, userEvent: "input.type" });
+  await waitFor(() => expect(currentCompletions(view.state).map((option) => option.detail)).toEqual(["column", "column", "column"]));
 });
 
 it.each([true, false])("highlights routine bodies without treating dollar-quoted values as code (readOnly=%s)", (readOnly) => {

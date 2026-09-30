@@ -69,6 +69,8 @@ fn export_ipc_types() {
     decl!(MetadataListSchemasRequest);
     decl!(DatabaseInfo);
     decl!(SchemaInfo);
+    decl!(SqlKeyword);
+    decl!(SqlWords);
     decl!(ObjectKind);
     decl!(MetadataListObjectsRequest);
     decl!(MetadataDropObjectRequest);

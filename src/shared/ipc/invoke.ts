@@ -34,6 +34,7 @@ import type {
   ResultValueFetchRequest,
   ResultValueFetchResponse,
   SchemaInfo,
+  SqlWords,
   TableDataExecuteRequest,
   TableDataFetchPageRequest,
   TableMetadata,
@@ -95,6 +96,8 @@ export const ipc = {
     invoke<string>("metadata_get_routine_definition", args),
   metadataGetViewDefinition: (args: { connectionId: string; relationOid: number }) =>
     invoke<string>("metadata_get_view_definition", args),
+  metadataListSqlWords: (args: { connectionId: string }) =>
+    invoke<SqlWords>("metadata_list_sql_words", args),
   tableDataExecute: (request: TableDataExecuteRequest, onEvent: Channel<QueryStreamEvent>) =>
     invoke<ExecutionAccepted>("table_data_execute", { request, onEvent }),
   changesPreview: (request: ChangesPreviewRequest) =>

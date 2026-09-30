@@ -29,8 +29,9 @@ export function fuzzyMatch(pattern: string, label: string): FuzzyMatch | null {
  * matcher only takes a single letter at the start of a name and never scatters two.
  *
  * Order: where the match starts (earlier first), then how tight it is, then the
- * shorter name, then alphabetical. No `validFor`: an unfiltered result cannot be
- * reused, so the source runs again on every keystroke.
+ * higher `boost`, then the shorter name, then alphabetical. No `validFor`: an
+ * unfiltered result cannot be reused, so the source runs again on every keystroke.
+ * CodeMirror keeps this order as given; it ignores `boost` for unfiltered results.
  */
 export function fuzzyResult(from: number, pattern: string, options: Completion[]): CompletionResult {
   const ranges = new Map<Completion, number[]>();
@@ -43,6 +44,7 @@ export function fuzzyResult(from: number, pattern: string, options: Completion[]
   ranked.sort((a, b) =>
     a.match.start - b.match.start
     || a.match.span - b.match.span
+    || (b.option.boost ?? 0) - (a.option.boost ?? 0)
     || (pattern ? a.option.label.length - b.option.label.length : 0)
     || a.option.label.localeCompare(b.option.label));
   return {

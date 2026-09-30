@@ -71,6 +71,7 @@ pub fn run() {
             commands::metadata_get_table,
             commands::metadata_get_routine_definition,
             commands::metadata_get_view_definition,
+            commands::metadata_list_sql_words,
             commands::table_data_execute,
             commands::workspace_snapshot_load,
             commands::workspace_snapshot_save,
