@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { aiModels, appFonts, appFontSizes, resetAppSettings, setAppSettings, useAppSettings, type AiProvider, type AppTheme } from "../../entities/settings/appSettings";
 import { displayShortcut, shortcutDefinitions, shortcutFromEvent, shortcutGroups, shortcutMatches, shortcutScope, shortcutsConflict, UNBOUND, type ShortcutId } from "../../entities/settings/shortcuts";
 import { useCanGoBack, useNavigate, useRouter } from "@tanstack/react-router";
@@ -13,18 +13,22 @@ export function SettingsPage() {
   const [recording, setRecording] = useState<ShortcutId | null>(null);
   const [shortcutError, setShortcutError] = useState("");
 
+  const close = useCallback(() => {
+    if (canGoBack) router.history.back();
+    else void navigate({ to: "/" });
+  }, [canGoBack, router, navigate]);
+
   // Settings is the frontmost view, so the close-tab key closes it.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (recording || !shortcutMatches(event, settings.shortcuts.closeTab)) return;
       event.preventDefault();
       event.stopPropagation();
-      if (canGoBack) router.history.back();
-      else void navigate({ to: "/" });
+      close();
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [recording, settings.shortcuts.closeTab, canGoBack, router, navigate]);
+  }, [recording, settings.shortcuts.closeTab, close]);
   useEffect(() => {
     if (!recording) return;
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -66,7 +70,11 @@ export function SettingsPage() {
             {settings.shortcuts.closeTab !== UNBOUND && ` ${displayShortcut(settings.shortcuts.closeTab)}로 닫습니다.`}
           </p>
         </div>
-        <button type="button" onClick={resetAppSettings} className="rounded border border-gray-300 px-3 py-1.5 text-sm hover:bg-gray-50">기본값 복원</button>
+        <div className="flex items-center gap-2">
+          <button type="button" onClick={resetAppSettings} className="rounded border border-gray-300 px-3 py-1.5 text-sm hover:bg-gray-50">기본값 복원</button>
+          <button type="button" onClick={close} aria-label="설정 닫기" title="설정 닫기"
+            className="rounded px-2 py-1 text-xl leading-none text-gray-500 hover:bg-gray-100 hover:text-gray-800">×</button>
+        </div>
       </div>
 
       <section aria-labelledby="appearance-heading" className="rounded-lg border border-gray-200 bg-white p-5">

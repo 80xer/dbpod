@@ -45,6 +45,12 @@ test("the close-tab shortcut leaves settings for the previous screen", () => {
   expect(routerMock.back).toHaveBeenCalled();
 });
 
+test("the close button leaves settings for the previous screen", () => {
+  render(<SettingsPage />);
+  fireEvent.click(screen.getByRole("button", { name: "설정 닫기" }));
+  expect(routerMock.back).toHaveBeenCalledTimes(1);
+});
+
 test("while recording, the close-tab shortcut is captured instead of closing", () => {
   render(<SettingsPage />);
   const closeTab = screen.getByRole("button", { name: "현재 탭 닫기 단축키" });
