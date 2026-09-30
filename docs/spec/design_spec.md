@@ -107,9 +107,9 @@ Desktop shows multiple levels at once. Mobile presents the same levels using swi
 │      │ Recent            │ [Result 1 · 125] [Result 2 · 98] [Messages]  │
 │      │ Tables            ├───────────────────────────────────────────────┤
 │      │ Views             │ Save 3 changes   Preview SQL   Discard       │
-│      │ Materialized      │                                               │
 │      │ Functions         │                  Result Grid                  │
 │      │ Sequences         │                                               │
+│      │                   │                                               │
 │      │                   │                                               │
 │      ├───────────────────┼───────────────────────────────────────────────┤
 │      │ Schema / Options  │ Connected · user@host/db · verify-full       │
@@ -224,8 +224,7 @@ The Object Sidebar displays objects from the active Connection Workspace.
 │ Pinned                 3 │
 │ Recent                 5 │
 │ Tables               128 │
-│ Views                 14 │
-│ Materialized Views     2 │
+│ Views                 16 │
 │ Functions             23 │
 │ Sequences              8 │
 ├──────────────────────────┤
@@ -262,8 +261,7 @@ MVP sections:
 - Pinned
 - Recent
 - Tables
-- Views
-- Materialized Views
+- Views (views and materialized views in one folder)
 - Functions
 - Sequences
 
