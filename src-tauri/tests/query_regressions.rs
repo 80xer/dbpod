@@ -169,6 +169,125 @@ async fn drops_the_catalog_selected_relation_or_routine_and_blocks_read_only_con
     .is_some());
 }
 
+#[tokio::test]
+async fn view_scripts_quote_catalog_names_and_recreate_the_same_view() {
+    use dbpod_lib::application::metadata_service;
+    use sqlx::Connection;
+
+    let (_node, state) = setup().await;
+    let opts = state.workspaces.lock().unwrap()[CONN_ID]
+        .connect_opts
+        .clone();
+    let mut admin = sqlx::PgConnection::connect_with(&opts).await.unwrap();
+    sqlx::raw_sql(
+        "CREATE SCHEMA \"Odd; Schema\"; \
+         CREATE TABLE \"Odd; Schema\".src(id int); \
+         INSERT INTO \"Odd; Schema\".src VALUES (1), (2); \
+         CREATE VIEW \"Odd; Schema\".\"v \"\"q\"\"; DROP\" AS SELECT id AS \"Id\" FROM \"Odd; Schema\".src WHERE id > 1; \
+         CREATE MATERIALIZED VIEW \"Odd; Schema\".\"Filled\" AS SELECT count(*) AS n FROM \"Odd; Schema\".src; \
+         CREATE MATERIALIZED VIEW \"Odd; Schema\".empty AS SELECT id FROM \"Odd; Schema\".src WITH NO DATA; \
+         CREATE VIEW \"Odd; Schema\".guarded WITH (security_invoker=true, security_barrier=true) AS SELECT id FROM \"Odd; Schema\".src; \
+         CREATE VIEW \"Odd; Schema\".checked AS SELECT id FROM \"Odd; Schema\".src WHERE id > 0 WITH LOCAL CHECK OPTION",
+    )
+    .execute(&mut admin)
+    .await
+    .unwrap();
+    let oid_of = |name: &'static str| {
+        sqlx::query_scalar::<_, i64>("SELECT to_regclass($1)::oid::int8").bind(name)
+    };
+    let view = r#""Odd; Schema"."v ""q""; DROP""#;
+    for (name, drop, header, footer) in [
+        (
+            view,
+            "DROP VIEW",
+            format!("CREATE OR REPLACE VIEW {view} AS\n"),
+            ";",
+        ),
+        (
+            r#""Odd; Schema"."Filled""#,
+            "DROP MATERIALIZED VIEW",
+            r#"CREATE MATERIALIZED VIEW "Odd; Schema"."Filled" AS"#.to_owned() + "\n",
+            "\nWITH DATA;",
+        ),
+        (
+            r#""Odd; Schema".empty"#,
+            "DROP MATERIALIZED VIEW",
+            r#"CREATE MATERIALIZED VIEW "Odd; Schema".empty AS"#.to_owned() + "\n",
+            "\nWITH NO DATA;",
+        ),
+        (
+            r#""Odd; Schema".guarded"#,
+            "DROP VIEW",
+            r#"CREATE OR REPLACE VIEW "Odd; Schema".guarded WITH (security_invoker=true, security_barrier=true) AS"#.to_owned() + "\n",
+            ";",
+        ),
+        (
+            r#""Odd; Schema".checked"#,
+            "DROP VIEW",
+            r#"CREATE OR REPLACE VIEW "Odd; Schema".checked WITH (check_option=local) AS"#.to_owned() + "\n",
+            ";",
+        ),
+    ] {
+        let oid = oid_of(name).fetch_one(&mut admin).await.unwrap();
+        let options_of = |oid: i64| {
+            sqlx::query_scalar::<_, Option<Vec<String>>>(
+                "SELECT reloptions FROM pg_class WHERE oid::int8 = $1",
+            )
+            .bind(oid)
+        };
+        let options = options_of(oid).fetch_one(&mut admin).await.unwrap();
+        let script = metadata_service::get_view_definition(&state, CONN_ID, oid as u32)
+            .await
+            .unwrap();
+        assert!(script.starts_with(&header), "{script}");
+        assert!(script.ends_with(footer), "{script}");
+        // The script is the object: dropping and replaying it yields the same relation.
+        // Dynamic SQL here is fixed test names plus the script under test.
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!("{drop} {name}")))
+            .execute(&mut admin)
+            .await
+            .unwrap();
+        sqlx::raw_sql(sqlx::AssertSqlSafe(script.clone()))
+            .execute(&mut admin)
+            .await
+            .unwrap();
+        let recreated = oid_of(name).fetch_one(&mut admin).await.unwrap();
+        // Permission and row-filtering options survive the replay.
+        assert_eq!(options_of(recreated).fetch_one(&mut admin).await.unwrap(), options);
+        assert_eq!(
+            metadata_service::get_view_definition(&state, CONN_ID, recreated as u32)
+                .await
+                .unwrap(),
+            script
+        );
+    }
+    let ids: Vec<i32> =
+        sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT \"Id\" FROM {view}")))
+            .fetch_all(&mut admin)
+            .await
+            .unwrap();
+    assert_eq!(ids, [2]);
+    assert!(!sqlx::query_scalar::<_, bool>(
+        "SELECT relispopulated FROM pg_class WHERE oid = '\"Odd; Schema\".empty'::regclass"
+    )
+    .fetch_one(&mut admin)
+    .await
+    .unwrap());
+
+    let table = oid_of(r#""Odd; Schema".src"#)
+        .fetch_one(&mut admin)
+        .await
+        .unwrap();
+    assert!(
+        metadata_service::get_view_definition(&state, CONN_ID, table as u32)
+            .await
+            .is_err()
+    );
+    assert!(metadata_service::get_view_definition(&state, CONN_ID, 0)
+        .await
+        .is_err());
+}
+
 fn sink_channel() -> (EventSink, UnboundedReceiver<QueryStreamEvent>) {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let sink: EventSink = Arc::new(move |e| tx.send(e).is_ok());

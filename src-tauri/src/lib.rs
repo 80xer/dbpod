@@ -69,6 +69,7 @@ pub fn run() {
             commands::metadata_drop_object,
             commands::metadata_get_table,
             commands::metadata_get_routine_definition,
+            commands::metadata_get_view_definition,
             commands::table_data_execute,
             commands::workspace_snapshot_load,
             commands::workspace_snapshot_save,

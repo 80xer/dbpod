@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
-import type { DatabaseObjectSummary } from "../../generated/ipc-types";
+import type { DatabaseObjectSummary, ObjectKind } from "../../generated/ipc-types";
 import { ipc } from "../../shared/ipc/invoke";
 import { confirmDialog } from "../../shared/ui/prompt";
 
@@ -11,6 +11,13 @@ const KIND_ICON: Record<string, string> = {
   sequence: "↻",
   function: "ƒ",
 };
+
+/** Schema folders in display order; each lists only its own catalog kinds. */
+const GROUPS = {
+  table: { label: "Tables", kinds: ["table"] },
+  view: { label: "Views", kinds: ["view", "materialized-view"] },
+  function: { label: "Functions", kinds: ["function"] },
+} satisfies Record<string, { label: string; kinds: ObjectKind[] }>;
 
 type Props = {
   connectionId: string;
@@ -166,17 +173,17 @@ function ObjectGroup({
   filter: string;
   onOpenObject: Props["onOpenObject"];
   onObjectContextMenu: (object: DatabaseObjectSummary, x: number, y: number) => void;
-  kind: "table" | "function";
+  kind: keyof typeof GROUPS;
 }) {
   const [open, setGroupOpen] = useExpansion(`group:${connectionId}:${schemaOid}:${kind}${filter ? ":search" : ""}`, !!filter);
-  const label = kind === "table" ? "Tables" : "Functions";
+  const { label, kinds } = GROUPS[kind];
   const objects = useQuery({
     queryKey: ["objects", connectionId, schemaOid, kind],
     queryFn: () =>
       ipc.metadataListObjects({
         connectionId,
         schemaOids: [schemaOid],
-        kinds: kind === "table" ? ["table", "view", "materialized-view"] : ["function"],
+        kinds,
       }),
     enabled: open,
     staleTime: 60_000,
@@ -247,6 +254,7 @@ function SchemaSection(props: {
     </button>
     {open && <ul className="ml-2">
       <ObjectGroup {...props} kind="table" />
+      <ObjectGroup {...props} kind="view" />
       <ObjectGroup {...props} kind="function" />
     </ul>}
   </div>;

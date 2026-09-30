@@ -826,6 +826,16 @@ pub async fn metadata_get_routine_definition(
 }
 
 #[tauri::command]
+pub async fn metadata_get_view_definition(
+    state: State<'_, AppState>,
+    connection_id: String,
+    relation_oid: u32,
+) -> Result<String, AppError> {
+    crate::application::metadata_service::get_view_definition(&state, &connection_id, relation_oid)
+        .await
+}
+
+#[tauri::command]
 pub async fn metadata_get_table(
     state: State<'_, AppState>,
     request: crate::domain::metadata::MetadataGetTableRequest,

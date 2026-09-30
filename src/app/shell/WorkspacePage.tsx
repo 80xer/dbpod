@@ -739,6 +739,7 @@ function WorkspaceContent({ connectionId }: { connectionId: string }) {
                     database={profile.database}
                     tab={tab}
                     readOnly={profile.readOnly}
+                    focused={focused}
                     dispatch={dispatch}
                     onRun={(mode) => void run(mode, tab)}
                     onCancel={() => cancel(tab)}

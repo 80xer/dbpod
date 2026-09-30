@@ -22,7 +22,7 @@ vi.mock("@tauri-apps/api/core", () => ({ Channel: class<T> { onmessage: (event: 
 vi.mock("../../shared/ipc/invoke", () => ({ ipc: {
   queryExecute: vi.fn(), queryCancel: vi.fn(), tableDataExecute: vi.fn(), queryAckChunk: vi.fn(), metadataGetTable: vi.fn(),
   resultRelease: vi.fn(), querySessionClose: vi.fn(), connectionClose: vi.fn(),
-  connectionSwitchDatabase: vi.fn(), connectionReconnect: vi.fn(), metadataListDatabases: vi.fn(), metadataGetRoutineDefinition: vi.fn(),
+  connectionSwitchDatabase: vi.fn(), connectionReconnect: vi.fn(), metadataListDatabases: vi.fn(), metadataGetRoutineDefinition: vi.fn(), metadataGetViewDefinition: vi.fn(),
 } }));
 vi.mock("../../entities/workspace/persistence", () => ({
   restoreWorkspace: vi.fn(), saveWorkspaceSoon: vi.fn(), saveWorkspaceNow: vi.fn(), preloadSnapshot: vi.fn(),
@@ -39,6 +39,7 @@ vi.mock("../../features/object-explorer/ObjectSidebar", () => ({
     <button onClick={() => onOpenObject({ oid: 101, schema: "public", name: "beta" })}>Open beta</button>
     <button onClick={() => onOpenObject({ oid: 201, schema: "public", name: "lookup", kind: "function", functionArguments: "integer" })}>Open function</button>
     <button onClick={() => onOpenObject({ oid: 202, schema: "public", name: "refresh_cache", kind: "function", functionArguments: "" })}>Open procedure</button>
+    <button onClick={() => onOpenObject({ oid: 300, schema: "public", name: "active_orders", kind: "view" })}>Open view</button>
     <button onClick={() => onChangeDatabase("analytics")}>Open analytics DB</button>
     <button onClick={() => onChangeDatabase("db")}>Open default DB</button>
   </>,
@@ -120,7 +121,7 @@ beforeEach(() => {
     complete(channel, executionId, 200);
     return { executionId, sessionId: `session:${request.queryTabId}` };
   });
-  vi.mocked(ipc.metadataGetTable).mockImplementation(async ({ relationOid }) => ({ relationOid, schema: "public", name: relationOid === 100 ? "alpha" : "beta", kind: "table", columns: [], primaryKey: [], uniqueKeys: [], rowLevelSecurity: false }));
+  vi.mocked(ipc.metadataGetTable).mockImplementation(async ({ relationOid }) => ({ relationOid, schema: "public", name: relationOid === 100 ? "alpha" : "beta", kind: relationOid === 300 ? "view" : "table", columns: [], primaryKey: [], uniqueKeys: [], rowLevelSecurity: false }));
 });
 afterEach(() => {
   cleanup();
@@ -357,6 +358,48 @@ it("opens function/procedure code in reusable read-only tabs, refreshes it and r
   expect(screen.queryByLabelText("정의 SQL")).toBeNull();
   expect(workspaceStates.get("A")!.tabs.every((t) => t.kind === "query")).toBe(true);
   expect(testRouter.state.location.pathname).toBe("/workspace/A");
+});
+
+it("adds a read-only Script tab to views only and keeps the chosen mode on the tab", async () => {
+  const viewSql = "CREATE OR REPLACE VIEW public.active_orders AS\n SELECT 1;";
+  vi.mocked(ipc.metadataGetViewDefinition).mockResolvedValue(viewSql);
+  await mountWorkspace();
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Open alpha" })); });
+  await screen.findByRole("button", { name: "Properties" });
+  expect(screen.queryByRole("button", { name: "Script" })).toBeNull();
+
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Open view" })); });
+  const viewTab = workspaceStates.get("A")!.activeTabId!;
+  const script = await screen.findByRole("button", { name: "Script" });
+  const modes = screen.getAllByRole("button", { name: /^(Properties|Data|Script)$/ }).map((b) => b.textContent);
+  expect(modes).toEqual(["Properties", "Data", "Script"]);
+  expect(ipc.metadataGetViewDefinition).not.toHaveBeenCalled();
+  fireEvent.click(script);
+  await waitFor(() => expect((screen.getByLabelText("정의 SQL") as HTMLTextAreaElement).value).toBe(viewSql));
+  expect((screen.getByLabelText("정의 SQL") as HTMLTextAreaElement).readOnly).toBe(true);
+  expect(ipc.metadataGetViewDefinition).toHaveBeenLastCalledWith({ connectionId: "A", relationOid: 300 });
+  expect(workspaceStates.get("A")!.tabs.find((t) => t.id === viewTab)!.tableDataMode).toBe("script");
+
+  fireEvent.click(screen.getByRole("button", { name: "Data" }));
+  expect(screen.queryByLabelText("정의 SQL")).toBeNull();
+  expect(ipc.metadataGetViewDefinition).toHaveBeenCalledTimes(1);
+});
+
+it("styles the selected view mode like a query tab: blue in the focused pane, grey once another pane takes focus", async () => {
+  await mountWorkspace();
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Open view" })); });
+  const data = await screen.findByRole("button", { name: "Data" });
+  const script = await screen.findByRole("button", { name: "Script" });
+  expect(data.className).toContain("border-blue-400");
+  for (const inactive of [screen.getByRole("button", { name: "Properties" }), script]) {
+    expect(inactive.className.split(" ")).toEqual(expect.arrayContaining(["border-transparent", "bg-gray-100", "hover:bg-gray-200"]));
+    expect(inactive.className).not.toContain("border-blue-400");
+  }
+
+  await act(async () => { fireEvent.click(screen.getAllByRole("button", { name: "쿼리 영역 좌우 분할" })[0]); });
+  expect(workspaceStates.get("A")!.tabs.find((t) => t.id === workspaceStates.get("A")!.activeTabId)!.kind).toBe("query");
+  expect(screen.getByRole("button", { name: "Data" }).className).toContain("border-gray-300");
+  expect(screen.getByRole("button", { name: "Data" }).className).not.toContain("border-blue-400");
 });
 
 it("changes DB in the same connection, clears stale results and restores database-specific drafts", async () => {

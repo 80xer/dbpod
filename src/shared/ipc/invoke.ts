@@ -90,6 +90,8 @@ export const ipc = {
     invoke<TableMetadata>("metadata_get_table", { request }),
   metadataGetRoutineDefinition: (args: { connectionId: string; routineOid: number }) =>
     invoke<string>("metadata_get_routine_definition", args),
+  metadataGetViewDefinition: (args: { connectionId: string; relationOid: number }) =>
+    invoke<string>("metadata_get_view_definition", args),
   tableDataExecute: (request: TableDataExecuteRequest, onEvent: Channel<QueryStreamEvent>) =>
     invoke<ExecutionAccepted>("table_data_execute", { request, onEvent }),
   changesPreview: (request: ChangesPreviewRequest) =>

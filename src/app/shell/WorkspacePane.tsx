@@ -3,7 +3,8 @@ import { useId, useRef, useState } from "react";
 import { saveWorkspaceSoon } from "../../entities/workspace/persistence";
 import { sqlDrafts, type QueryTabState, type WorkspaceAction } from "../../entities/workspace/workspaceStore";
 import { TableDataView } from "../../features/object-explorer/TableDataView";
-import { RoutineDefinitionView } from "../../features/object-explorer/RoutineDefinitionView";
+import { DefinitionView } from "../../features/object-explorer/DefinitionView";
+import { ipc } from "../../shared/ipc/invoke";
 import { SqlEditor } from "../../features/query-editor/SqlEditor";
 import { QueryResultPane } from "../../features/result-grid/QueryResultPane";
 import { getAppSettings } from "../../entities/settings/appSettings";
@@ -14,6 +15,8 @@ type Props = {
   database: string;
   tab: QueryTabState;
   readOnly: boolean;
+  /** The panel holding this tab has the keyboard. */
+  focused: boolean;
   dispatch: (action: WorkspaceAction) => void;
   onRun: (mode: "replace" | "new-result") => void;
   onCancel: () => void;
@@ -22,16 +25,18 @@ type Props = {
   onCloseResult: (resultTabId: string) => void;
 };
 
-export function WorkspacePane({ connectionId, database, tab, readOnly, dispatch, onRun, onCancel, onSqlChanged, onViewReady, onCloseResult }: Props) {
+export function WorkspacePane({ connectionId, database, tab, readOnly, focused, dispatch, onRun, onCancel, onSqlChanged, onViewReady, onCloseResult }: Props) {
   const [editorShare, setEditorShare] = useState(40);
   const editorPaneId = useId();
   const queryLayoutRef = useRef<HTMLDivElement>(null);
   const resizeStart = useRef<{ pointerId: number; y: number; share: number; height: number } | null>(null);
   const runShortcut = displayShortcut(getAppSettings().shortcuts.runQuery);
+  const routineOid = tab.routineOid;
 
   return <>
-      {tab.kind === "routine-definition" && tab.routineOid !== undefined && (
-        <RoutineDefinitionView key={tab.id} connectionId={connectionId} routineOid={tab.routineOid} title={tab.title} />
+      {tab.kind === "routine-definition" && routineOid !== undefined && (
+        <DefinitionView key={tab.id} title={tab.title} queryKey={["routine-definition", connectionId, routineOid]}
+          load={() => ipc.metadataGetRoutineDefinition({ connectionId, routineOid })} />
       )}
 
       {tab.kind === "table-data" && (
@@ -40,6 +45,7 @@ export function WorkspacePane({ connectionId, database, tab, readOnly, dispatch,
           connectionId={connectionId}
           tab={tab}
           readOnly={readOnly}
+          focused={focused}
           onModeChange={(mode) => dispatch({ type: "TABLE_DATA_MODE_SET", tabId: tab.id, mode })}
         />
       )}

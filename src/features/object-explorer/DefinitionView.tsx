@@ -1,17 +1,16 @@
 import { useQuery } from "@tanstack/react-query";
-import { ipc } from "../../shared/ipc/invoke";
 import { SqlEditor } from "../query-editor/SqlEditor";
 
-export function RoutineDefinitionView({ connectionId, routineOid, title }: {
-  connectionId: string;
-  routineOid: number;
+/**
+ * Read-only catalog SQL (routine or view definition). The query key must start
+ * with a kind and the connection id so a database switch drops it.
+ */
+export function DefinitionView({ title, queryKey, load }: {
   title: string;
+  queryKey: readonly [string, string, number];
+  load: () => Promise<string>;
 }) {
-  const definition = useQuery({
-    queryKey: ["routine-definition", connectionId, routineOid],
-    queryFn: () => ipc.metadataGetRoutineDefinition({ connectionId, routineOid }),
-    staleTime: 60_000,
-  });
+  const definition = useQuery({ queryKey, queryFn: load, staleTime: 60_000 });
   return <section aria-label={`${title} 정의`} className="flex min-h-0 flex-1 flex-col">
     <div className="flex items-center gap-2 border-b border-gray-200 px-3 py-2 text-xs">
       <span className="min-w-0 flex-1 truncate" title={title}>{title}</span>

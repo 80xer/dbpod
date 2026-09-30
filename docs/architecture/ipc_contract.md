@@ -386,7 +386,7 @@ type DatabaseObjectSummary = {
 
 현재 구현은 최상위 테이블·뷰 최대 1,000개와 그 파티션 계층을 함께 반환한다. `partitionParentOid`는 직계 부모 OID이며 일반 테이블·뷰·함수는 `null`이다. 파티션은 부모 아래에만 나타나고, 다른 스키마의 파티션도 부모 응답에 포함된다. 일반 `INHERITS` 테이블은 독립 객체로 유지한다. 탐색기는 기본적으로 파티션을 접고, 검색 시 일치하는 자식과 부모 경로를 함께 표시한다.
 
-스키마 아래 `Tables`·`Functions` 폴더를 따로 두고 펼칠 때 해당 종류만 조회한다. `Functions`는 일반·윈도 함수와 프로시저를 반환하고 `functionArguments`에 식별용 인자 목록을 담아 오버로드를 구분한다. 함수·프로시저를 클릭하면 읽기 전용 정의 코드 탭을 열며 같은 OID의 열린 탭을 재사용한다.
+스키마 아래 `Tables`·`Views`·`Functions` 폴더를 이 순서로 따로 두고 펼칠 때 해당 종류만 조회한다. `Tables`는 일반·파티션 테이블, `Views`는 뷰와 materialized view를 반환한다. `Functions`는 일반·윈도 함수와 프로시저를 반환하고 `functionArguments`에 식별용 인자 목록을 담아 오버로드를 구분한다. 함수·프로시저를 클릭하면 읽기 전용 정의 코드 탭을 열며 같은 OID의 열린 탭을 재사용한다.
 
 ### 8.3 `metadata_get_table`
 
@@ -418,6 +418,25 @@ type MetadataGetRoutineDefinitionResponse = string
 ```
 
 현재 연결 DB의 `pg_proc`에서 OID로 함수·윈도 함수·프로시저를 찾아 `pg_get_functiondef` 결과를 반환한다. 해당 객체가 없으면 오류를 반환한다. UI는 정의 SQL을 읽기 전용으로 표시하고 새로고침·실패 시 재시도를 제공한다. DB 전환 시 정의 탭과 조회 캐시를 정리한다.
+
+### 8.5 `metadata_get_view_definition`
+
+```ts
+// IPC 최상위 인자
+type MetadataGetViewDefinitionArgs = {
+  connectionId: string
+  relationOid: number
+}
+
+type MetadataGetViewDefinitionResponse = string
+```
+
+현재 연결 DB의 `pg_class`에서 OID로 뷰(`relkind = 'v'`)나 materialized view(`'m'`)를 찾아 생성 스크립트를 반환한다. 스키마·이름은 서버 `quote_ident`로 인용하고 본문은 `pg_get_viewdef(oid, true)`를 쓴다.
+
+- 뷰: `CREATE OR REPLACE VIEW <schema>.<name> [WITH (<옵션>)] AS\n<정의>;`
+- materialized view: `CREATE MATERIALIZED VIEW <schema>.<name> AS\n<정의>\nWITH DATA;` (채워지지 않았으면 `WITH NO DATA;`)
+
+뷰의 `reloptions` 중 권한·행 필터링 의미를 바꾸는 `security_invoker`·`security_barrier`·`check_option`만 allowlist로 `WITH (...)`에 복원한다. 값은 영숫자 토큰만 허용한다. 그 외 옵션, materialized view 저장 옵션, tablespace, 인덱스, 권한, 코멘트는 포함하지 않는다. 뷰가 아니거나 없으면 오류를 반환한다. UI는 뷰 탭의 `Script` 모드에서 읽기 전용으로 표시하고 새로고침·재시도를 제공한다. 캐시 키가 연결 ID를 포함하므로 DB 전환 시 정리된다.
 
 ## 9. Query session
 

@@ -148,6 +148,27 @@ it("lists all databases and separates lazy table/function folders with overloade
   expect(screen.getByRole("button", { name: "orders" })).toBeTruthy();
 });
 
+it("lists views in their own folder between tables and functions", async () => {
+  const view = { ...table(40, "active_orders"), kind: "view" as const };
+  const matview = { ...table(41, "order_totals"), kind: "materialized-view" as const };
+  vi.mocked(ipc.metadataListObjects).mockImplementation(async (req) => req.kinds.includes("view") ? [view, matview] : [parent]);
+  mount();
+  const views = await screen.findByRole("button", { name: "public Views" });
+  const folders = screen.getAllByRole("button", { name: /^public (Tables|Views|Functions)$/ }).map((b) => b.getAttribute("aria-label"));
+  expect(folders).toEqual(["public Tables", "public Views", "public Functions"]);
+
+  fireEvent.click(views);
+  fireEvent.doubleClick(await screen.findByRole("button", { name: "active_orders" }));
+  expect(onOpenObject).toHaveBeenLastCalledWith(view);
+  expect(screen.getByRole("button", { name: "order_totals" })).toBeTruthy();
+  expect(ipc.metadataListObjects).toHaveBeenLastCalledWith({ connectionId: "connection", schemaOids: [1], kinds: ["view", "materialized-view"] });
+
+  fireEvent.click(screen.getByRole("button", { name: "public Tables" }));
+  await screen.findByRole("button", { name: "orders" });
+  expect(ipc.metadataListObjects).toHaveBeenLastCalledWith({ connectionId: "connection", schemaOids: [1], kinds: ["table"] });
+  expect(within(screen.getByRole("list", { name: "public Tables 목록" })).queryByText("active_orders")).toBeNull();
+});
+
 it("walks rows with the arrow keys and opens the focused one with Enter", async () => {
   mount();
   const tree = screen.getByRole("tree");

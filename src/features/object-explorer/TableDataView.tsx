@@ -11,6 +11,7 @@ import {
   type TableDataView as ViewState,
 } from "../../entities/workspace/workspaceStore";
 import { ipc } from "../../shared/ipc/invoke";
+import { DefinitionView } from "./DefinitionView";
 import { runTableData } from "../../shared/ipc/queryChannel";
 import { ResultGrid } from "../result-grid/ResultGrid";
 import { confirmDialog } from "../../shared/ui/prompt";
@@ -21,10 +22,12 @@ type Props = {
   connectionId: string;
   tab: QueryTabState;
   readOnly: boolean;
+  /** The panel holding this tab has the keyboard; colours the selected mode like a query tab. */
+  focused: boolean;
   onModeChange: (mode: TableDataMode) => void;
 };
 
-export function TableDataView({ connectionId, tab, readOnly, onModeChange }: Props) {
+export function TableDataView({ connectionId, tab, readOnly, focused, onModeChange }: Props) {
   const target = tab.tableData;
   const resultTabId = `${tab.id}:data`;
   const [view, setView] = useState<ViewState>(
@@ -100,7 +103,10 @@ export function TableDataView({ connectionId, tab, readOnly, onModeChange }: Pro
 
   const pageStart = view.offset + 1;
   const pageEnd = view.offset + snapshot.rows.length;
-  const dataMode = tab.tableDataMode === "properties" ? "properties" : "data";
+  const isView = meta.data?.kind === "view" || meta.data?.kind === "materialized-view";
+  const modes = ([["properties", "Properties"], ["data", "Data"], ["script", "Script"]] as const)
+    .filter(([mode]) => mode !== "script" || isView);
+  const dataMode: TableDataMode = tab.tableDataMode === "properties" || (tab.tableDataMode === "script" && isView) ? tab.tableDataMode : "data";
 
   return (
       <div data-result-area="" className="flex h-full min-h-0 flex-col">
@@ -112,29 +118,28 @@ export function TableDataView({ connectionId, tab, readOnly, onModeChange }: Pro
           {meta.data?.rowLevelSecurity && (
             <span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs text-amber-800">RLS</span>
           )}
-          <div className="-mb-px ml-1 inline-flex border-b border-gray-200">
-            <button
-              type="button"
-              onClick={() => onModeChange("properties")}
-              className={`rounded-t border border-gray-300 px-2.5 py-1 text-xs ${
-                dataMode === "properties" ? "border-b-white bg-white font-medium text-gray-900" : "text-gray-600 hover:bg-white/70"
-              }`}
-            >
-              Properties
-            </button>
-            <button
-              type="button"
-              onClick={() => onModeChange("data")}
-              className={`rounded-t border border-l-0 border-gray-300 px-2.5 py-1 text-xs ${
-                dataMode === "data" ? "border-b-white bg-white font-medium text-gray-900" : "text-gray-600 hover:bg-white/70"
-              }`}
-            >
-              Data
-            </button>
+          <div className="-mb-px ml-1 inline-flex items-end gap-1">
+            {modes.map(([mode, label]) => (
+              <button
+                key={mode}
+                type="button"
+                onClick={() => onModeChange(mode)}
+                className={`rounded-t border-x border-t px-2.5 py-1 text-xs ${
+                  dataMode === mode
+                    ? `bg-white font-medium text-gray-900 ${focused ? "border-blue-400" : "border-gray-300"}`
+                    : "border-transparent bg-gray-100 text-gray-600 hover:bg-gray-200"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
           </div>
         </div>
       </div>
-      {dataMode === "properties" ? (
+      {dataMode === "script" ? (
+        <DefinitionView title={`${target.schema}.${target.name}`} queryKey={["view-definition", connectionId, target.relationOid]}
+          load={() => ipc.metadataGetViewDefinition({ connectionId, relationOid: target.relationOid })} />
+      ) : dataMode === "properties" ? (
         <div className="min-h-0 flex-1">
           <div className="flex h-full min-h-0">
             <aside className="w-32 shrink-0 border-r border-gray-200 bg-gray-50 p-2 text-xs">

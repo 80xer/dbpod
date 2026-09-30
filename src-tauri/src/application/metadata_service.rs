@@ -396,6 +396,65 @@ pub async fn get_routine_definition(
     .await
 }
 
+/// Options that change a view's permission or row-filtering semantics. Only these
+/// are replayed; values are catalog-normalized words, checked before splicing.
+const VIEW_OPTIONS: [&str; 3] = ["check_option", "security_barrier", "security_invoker"];
+
+/// Rebuilds a view's creation script from the catalog. Names go through
+/// `quote_ident` server-side because the script is meant to be copied and run.
+pub async fn get_view_definition(
+    state: &AppState,
+    connection_id: &str,
+    relation_oid: u32,
+) -> Result<String, AppError> {
+    with_control(state, connection_id, move |conn| {
+        Box::pin(async move {
+            let row = sqlx::query(
+                "SELECT c.relkind::text, quote_ident(n.nspname) || '.' || quote_ident(c.relname), \
+                        pg_get_viewdef(c.oid, true), c.relispopulated, c.reloptions \
+                 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
+                 WHERE c.oid::int8 = $1 AND c.relkind IN ('v', 'm')",
+            )
+            .bind(i64::from(relation_oid))
+            .fetch_optional(conn)
+            .await
+            .map_err(|e| AppError::from_sqlx(&e))?
+            .ok_or_else(|| AppError::invalid_request("view no longer exists"))?;
+            let name: String = row.get(1);
+            let definition: String = row.get(2);
+            let definition = definition.trim_end().trim_end_matches(';');
+            Ok(if row.get::<String, _>(0) == "m" {
+                let data = if row.get(3) {
+                    "WITH DATA"
+                } else {
+                    "WITH NO DATA"
+                };
+                format!("CREATE MATERIALIZED VIEW {name} AS\n{definition}\n{data};")
+            } else {
+                let options: Vec<String> = row.get::<Option<Vec<String>>, _>(4).unwrap_or_default();
+                let options: Vec<&str> = options
+                    .iter()
+                    .map(String::as_str)
+                    .filter(|option| {
+                        option.split_once('=').is_some_and(|(key, value)| {
+                            VIEW_OPTIONS.contains(&key)
+                                && !value.is_empty()
+                                && value.bytes().all(|b| b.is_ascii_alphanumeric())
+                        })
+                    })
+                    .collect();
+                let with = if options.is_empty() {
+                    String::new()
+                } else {
+                    format!(" WITH ({})", options.join(", "))
+                };
+                format!("CREATE OR REPLACE VIEW {name}{with} AS\n{definition};")
+            })
+        })
+    })
+    .await
+}
+
 pub async fn get_table(
     state: &AppState,
     req: &MetadataGetTableRequest,
