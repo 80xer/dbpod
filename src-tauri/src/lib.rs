@@ -63,6 +63,7 @@ pub fn run() {
             commands::query_cancel,
             commands::result_value_fetch,
             commands::result_rows_fetch,
+            commands::table_data_fetch_page,
             commands::result_release,
             commands::metadata_list_schemas,
             commands::metadata_list_objects,

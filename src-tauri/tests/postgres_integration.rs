@@ -1388,3 +1388,263 @@ async fn numeric_expansion_is_charged_to_the_memory_budget() {
         "decoded digits were not charged to the budget: {retained} bytes"
     );
 }
+
+/// Table Data scrolls by asking for the next page of the result it already shows.
+mod table_data_pages {
+    use super::*;
+    use dbpod_lib::application::edit_service;
+    use dbpod_lib::domain::editing::*;
+    use dbpod_lib::domain::metadata::*;
+    use dbpod_lib::error::AppError;
+
+    const TAB: &str = "t-pages";
+    const RESULT: &str = "t-pages-data";
+
+    async fn run(state: &AppState, sql: &str) {
+        let (sink, mut rx) = sink_channel();
+        let accepted = query_service::execute(state, req("t-pages-setup", sql, 10), sink).unwrap();
+        let events = collect_events(state, &accepted.execution_id, &mut rx).await;
+        assert!(
+            matches!(events.last(), Some(QueryStreamEvent::Completed { .. })),
+            "{sql}: {events:?}"
+        );
+    }
+
+    async fn oid_of(state: &AppState, name: &str) -> u32 {
+        let opts = state.workspaces.lock().unwrap()[CONN_ID]
+            .connect_opts
+            .clone();
+        let mut c = sqlx::PgConnection::connect_with(&opts).await.unwrap();
+        sqlx::query_scalar::<_, i64>("SELECT to_regclass($1)::oid::int8")
+            .bind(name)
+            .fetch_one(&mut c)
+            .await
+            .unwrap() as u32
+    }
+
+    /// Opens the Data tab: 200 rows sorted by id, like double-clicking the table.
+    async fn first_page(state: &AppState, relation_oid: u32) -> (String, Vec<Vec<DbValue>>) {
+        let (sink, mut rx) = sink_channel();
+        let accepted = query_service::table_data_execute(
+            state,
+            TableDataExecuteRequest {
+                connection_id: CONN_ID.into(),
+                query_tab_id: TAB.into(),
+                result_tab_id: RESULT.into(),
+                relation_oid,
+                sort_attribute: Some(1),
+                sort_descending: false,
+                limit: 200,
+                offset: 0,
+            },
+            sink,
+        )
+        .await
+        .unwrap();
+        let events = collect_events(state, &accepted.execution_id, &mut rx).await;
+        let rows = events
+            .into_iter()
+            .filter_map(|e| match e {
+                QueryStreamEvent::Rows { rows, .. } => Some(rows),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        (accepted.execution_id, rows)
+    }
+
+    async fn next(
+        state: &AppState,
+        execution_id: &str,
+    ) -> Result<ResultRowsFetchResponse, Box<AppError>> {
+        query_service::table_data_fetch_page(
+            state,
+            TableDataFetchPageRequest {
+                connection_id: CONN_ID.into(),
+                query_tab_id: TAB.into(),
+                result_tab_id: RESULT.into(),
+                execution_id: execution_id.into(),
+            },
+        )
+        .await
+        .map_err(Box::new)
+    }
+
+    /// Column 0 is the xmin row version, column 1 the id.
+    fn ids(rows: &[Vec<DbValue>]) -> Vec<i64> {
+        rows.iter()
+            .map(|row| match &row[1] {
+                DbValue::Integer { value } => value.parse().unwrap(),
+                other => panic!("id is not an integer: {other:?}"),
+            })
+            .collect()
+    }
+
+    fn usage(state: &AppState) -> usize {
+        state.retained_usage.lock().unwrap().values().sum()
+    }
+
+    #[tokio::test]
+    async fn pages_continue_the_shown_rows_without_gaps_even_after_a_delete() {
+        let (_node, state) = setup().await;
+        run(
+            &state,
+            "CREATE TABLE public.seq_items (id int PRIMARY KEY, v text)",
+        )
+        .await;
+        run(
+            &state,
+            "INSERT INTO public.seq_items SELECT n, 'v' || n FROM generate_series(1, 450) n",
+        )
+        .await;
+        let oid = oid_of(&state, "public.seq_items").await;
+        let (execution, rows) = first_page(&state, oid).await;
+        assert_eq!(ids(&rows), (1..=200).collect::<Vec<_>>());
+
+        // Deleting a shown row moves every later row up by one; the next page must
+        // start at 201 all the same, not skip it.
+        let xmin = match &rows[4][0] {
+            DbValue::Text { value } => value.clone(),
+            other => panic!("xmin is not text: {other:?}"),
+        };
+        let meta = dbpod_lib::application::metadata_service::get_table(
+            &state,
+            &MetadataGetTableRequest {
+                connection_id: CONN_ID.into(),
+                relation_oid: oid,
+            },
+        )
+        .await
+        .unwrap();
+        let preview = edit_service::preview(
+            &state,
+            &ChangesPreviewRequest {
+                connection_id: CONN_ID.into(),
+                result_tab_id: RESULT.into(),
+                relation_oid: oid,
+                changes: vec![RowChange::Delete {
+                    row_id: "five".into(),
+                    identity: RowIdentity {
+                        relation_oid: meta.relation_oid,
+                        primary_key: vec![PrimaryKeyValue {
+                            attribute_number: 1,
+                            column_name: "id".into(),
+                            value: DbValue::Integer { value: "5".into() },
+                        }],
+                        xmin: Some(xmin),
+                    },
+                    original_values: HashMap::new(),
+                }],
+            },
+        )
+        .await
+        .unwrap();
+        let (tx, mut commit_rx) = tokio::sync::mpsc::unbounded_channel();
+        edit_service::commit(
+            &state,
+            &ChangesCommitRequest {
+                change_set_id: preview.change_set_id,
+            },
+            Arc::new(move |e| tx.send(e).is_ok()),
+        )
+        .await
+        .unwrap();
+        let mut committed = false;
+        while let Ok(Some(e)) = timeout(Duration::from_secs(10), commit_rx.recv()).await {
+            if matches!(e, ChangesCommitEvent::Completed { .. }) {
+                committed = true;
+                break;
+            }
+        }
+        assert!(committed);
+
+        let page = next(&state, &execution).await.unwrap();
+        assert_eq!(ids(&page.rows), (201..=400).collect::<Vec<_>>());
+        assert!(page.has_more);
+        let page = next(&state, &execution).await.unwrap();
+        assert_eq!(ids(&page.rows), (401..=450).collect::<Vec<_>>());
+        assert!(!page.has_more);
+
+        // Only the current result of this tab can be continued.
+        assert!(next(&state, "another-execution").await.is_err());
+        let foreign = query_service::table_data_fetch_page(
+            &state,
+            TableDataFetchPageRequest {
+                connection_id: CONN_ID.into(),
+                query_tab_id: "t-pages-setup".into(),
+                result_tab_id: RESULT.into(),
+                execution_id: execution.clone(),
+            },
+        )
+        .await;
+        assert!(foreign.is_err());
+        let (refreshed, rows) = first_page(&state, oid).await;
+        assert_eq!(rows.len(), 200);
+        assert!(next(&state, &execution).await.is_err());
+        assert_eq!(ids(&next(&state, &refreshed).await.unwrap().rows)[0], 202);
+    }
+
+    #[tokio::test]
+    async fn rows_past_the_transfer_limit_wait_in_the_result_instead_of_being_decoded_again() {
+        let (_node, state) = setup().await;
+        run(
+            &state,
+            "CREATE TABLE public.wide_items (id int PRIMARY KEY, v text)",
+        )
+        .await;
+        // 20 KB a row: a 200-row page is ~4 MB, far over the 1 MiB transfer limit.
+        run(&state, "INSERT INTO public.wide_items SELECT n, repeat('x', 20000) FROM generate_series(1, 400) n").await;
+        let oid = oid_of(&state, "public.wide_items").await;
+        let (execution, rows) = first_page(&state, oid).await;
+        assert_eq!(rows.len(), 200);
+
+        let first = next(&state, &execution).await.unwrap();
+        assert!(first.has_more && !first.rows.is_empty() && first.rows.len() < 200);
+        let after_decode = usage(&state);
+        let mut seen = ids(&first.rows);
+        let mut fetches = 1;
+        loop {
+            let pending = seen.len() < 200;
+            let page = next(&state, &execution).await.unwrap();
+            fetches += 1;
+            seen.extend(ids(&page.rows));
+            if pending {
+                // Served from rows already decoded: nothing new is charged.
+                assert_eq!(
+                    usage(&state),
+                    after_decode,
+                    "fetch {fetches} charged the budget again"
+                );
+            }
+            if !page.has_more {
+                break;
+            }
+        }
+        assert_eq!(seen, (201..=400).collect::<Vec<_>>());
+        assert!(fetches > 2);
+    }
+
+    #[tokio::test]
+    async fn a_column_change_between_pages_stops_instead_of_mixing_row_shapes() {
+        let (_node, state) = setup().await;
+        run(
+            &state,
+            "CREATE TABLE public.drift_items (id int PRIMARY KEY)",
+        )
+        .await;
+        run(
+            &state,
+            "INSERT INTO public.drift_items SELECT generate_series(1, 300)",
+        )
+        .await;
+        let oid = oid_of(&state, "public.drift_items").await;
+        let (execution, _) = first_page(&state, oid).await;
+        run(
+            &state,
+            "ALTER TABLE public.drift_items ADD COLUMN extra int",
+        )
+        .await;
+        let error = next(&state, &execution).await.unwrap_err();
+        assert_eq!(error.code, "SCHEMA_CHANGED");
+    }
+}

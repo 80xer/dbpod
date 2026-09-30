@@ -134,6 +134,8 @@ export type TableDataExecuteRequest = { connectionId: string, queryTabId: string
  */
 sortAttribute: number | null, sortDescending: boolean, limit: number, offset: number, };
 
+export type TableDataFetchPageRequest = { connectionId: string, queryTabId: string, resultTabId: string, executionId: string, };
+
 export type TabSnapshot = { title: string, sql: string, id: string | null, 
 /**
  * The saved query this tab edits, so Cmd+S still overwrites after a restart.

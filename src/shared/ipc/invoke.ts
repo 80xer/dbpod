@@ -35,6 +35,7 @@ import type {
   ResultValueFetchResponse,
   SchemaInfo,
   TableDataExecuteRequest,
+  TableDataFetchPageRequest,
   TableMetadata,
   AiChatEvent,
   AiChatRequest,
@@ -78,6 +79,8 @@ export const ipc = {
     invoke<ResultValueFetchResponse>("result_value_fetch", { request }),
   resultRowsFetch: (request: ResultRowsFetchRequest) =>
     invoke<ResultRowsFetchResponse>("result_rows_fetch", { request }),
+  tableDataFetchPage: (request: TableDataFetchPageRequest) =>
+    invoke<ResultRowsFetchResponse>("table_data_fetch_page", { request }),
   resultRelease: (request: ResultReleaseRequest) =>
     invoke<void>("result_release", { request }),
   metadataListSchemas: (request: MetadataListSchemasRequest) =>

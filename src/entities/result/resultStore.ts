@@ -28,7 +28,11 @@ export type ResultSnapshot = {
   hasMoreRows?: boolean;
   loadingMore?: boolean;
   pageError?: string;
+  /** Table Data results continue by asking the backend for the next rows of the same result. */
+  tablePage?: TablePageSource;
 };
+
+export type TablePageSource = { connectionId: string; queryTabId: string; pageSize: number };
 
 const EMPTY: ResultSnapshot = { columns: [], rows: [], status: "idle" };
 
@@ -42,11 +46,11 @@ class ResultStore {
   private nextSequence = new Map<string, number>();
   private listeners = new Map<string, Set<() => void>>();
 
-  create(resultTabId: string, executedSql?: string, pageable = false): void {
+  create(resultTabId: string, executedSql?: string, pageable = false, tablePage?: TablePageSource): void {
     const edits = editStore.getSnapshot(resultTabId);
     if (edits.pendingCount || edits.locked) throw new Error("저장하지 않은 변경이 있는 결과는 교체할 수 없습니다.");
     if (this.states.get(resultTabId)?.status === "running") throw new Error("이미 실행 중인 결과입니다.");
-    this.states.set(resultTabId, { columns: [], rows: [], status: "running", executedSql, pageable, nextRowOffset: 0 });
+    this.states.set(resultTabId, { columns: [], rows: [], status: "running", executedSql, pageable, nextRowOffset: 0, tablePage });
     this.nextSequence.set(resultTabId, 0);
     this.emit(resultTabId);
   }
@@ -121,7 +125,10 @@ class ResultStore {
     >,
   ): void {
     this.update(resultTabId, (s) => ({ ...s, ...terminal,
-      hasMoreRows: Boolean(s.pageable && !s.protocolError && terminal.status !== "failed" && (terminal.rowCount ?? 0) > (s.nextRowOffset ?? 0)),
+      hasMoreRows: !s.protocolError && (s.tablePage
+        // A full first page may have more after it; a short or memory-truncated one is everything.
+        ? terminal.status === "completed" && !terminal.truncated && (terminal.rowCount ?? 0) >= s.tablePage.pageSize
+        : Boolean(s.pageable && terminal.status !== "failed" && (terminal.rowCount ?? 0) > (s.nextRowOffset ?? 0))),
       ...(s.protocolError ? { status: "failed", error: s.error } : {}) }));
   }
 

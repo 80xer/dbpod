@@ -1,7 +1,7 @@
 import { Channel } from "@tauri-apps/api/core";
 import { historyStore } from "../../entities/query/historyStore";
 import { dispatchWorkspace, workspaceStates } from "../../entities/workspace/workspaceStore";
-import { resultStore } from "../../entities/result/resultStore";
+import { resultStore, type TablePageSource } from "../../entities/result/resultStore";
 import type {
   ExecutionAccepted,
   QueryExecuteRequest,
@@ -73,11 +73,12 @@ async function start(
   request: Pick<QueryExecuteRequest, "connectionId" | "queryTabId" | "resultTabId">,
   invokeFn: (channel: Channel<QueryStreamEvent>) => Promise<ExecutionAccepted>,
   executedSql?: string,
+  tablePage?: TablePageSource,
 ): Promise<ExecutionAccepted> {
   const { connectionId, queryTabId: tabId, resultTabId } = request;
   const tab = workspaceStates.get(connectionId)?.tabs.find((t) => t.id === tabId);
   if (tab?.runningExecutionId) throw new Error("이 탭에서 이미 쿼리를 실행 중입니다.");
-  resultStore.create(resultTabId, executedSql, executedSql !== undefined);
+  resultStore.create(resultTabId, executedSql, executedSql !== undefined, tablePage);
   const rows = resultStore.getSnapshot(resultTabId).rows;
   const isCurrent = () => resultStore.getSnapshot(resultTabId).rows === rows;
   const dispatch = (action: Parameters<typeof dispatchWorkspace>[1]) => dispatchWorkspace(connectionId, action);
@@ -123,7 +124,11 @@ export function runQuery(request: QueryExecuteRequest): Promise<ExecutionAccepte
 }
 
 export function runTableData(request: TableDataExecuteRequest): Promise<ExecutionAccepted> {
-  return start(request, (ch) => ipc.tableDataExecute(request, ch));
+  return start(request, (ch) => ipc.tableDataExecute(request, ch), undefined, {
+    connectionId: request.connectionId,
+    queryTabId: request.queryTabId,
+    pageSize: request.limit,
+  });
 }
 
 export async function loadMoreRows(resultTabId: string): Promise<void> {
@@ -133,9 +138,16 @@ export async function loadMoreRows(resultTabId: string): Promise<void> {
   const isCurrent = () => resultStore.getSnapshot(resultTabId).rows === current.rows;
   resultStore.setPageLoading(resultTabId, true);
   try {
-    const page = await ipc.resultRowsFetch({ resultTabId, executionId: current.executionId, offset });
+    const page = current.tablePage
+      ? await ipc.tableDataFetchPage({
+        connectionId: current.tablePage.connectionId,
+        queryTabId: current.tablePage.queryTabId,
+        resultTabId,
+        executionId: current.executionId,
+      })
+      : await ipc.resultRowsFetch({ resultTabId, executionId: current.executionId, offset });
     if (!isCurrent()) return;
-    if (page.nextOffset !== offset + page.rows.length || (page.hasMore && page.rows.length === 0)) throw new Error("결과 페이지의 행 순서가 올바르지 않습니다.");
+    if ((!current.tablePage && page.nextOffset !== offset + page.rows.length) || (page.hasMore && page.rows.length === 0)) throw new Error("결과 페이지의 행 순서가 올바르지 않습니다.");
     resultStore.appendPage(resultTabId, page);
   } catch (error) {
     if (isCurrent()) resultStore.setPageLoading(resultTabId, false, (error as Error).message ?? String(error));

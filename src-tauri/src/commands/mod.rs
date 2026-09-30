@@ -898,6 +898,14 @@ pub fn result_rows_fetch(
 }
 
 #[tauri::command]
+pub async fn table_data_fetch_page(
+    state: State<'_, AppState>,
+    request: crate::domain::metadata::TableDataFetchPageRequest,
+) -> Result<ResultRowsFetchResponse, AppError> {
+    query_service::table_data_fetch_page(&state, request).await
+}
+
+#[tauri::command]
 pub fn result_value_fetch(
     state: State<'_, AppState>,
     request: ResultValueFetchRequest,

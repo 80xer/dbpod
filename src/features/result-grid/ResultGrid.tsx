@@ -242,7 +242,7 @@ export function ResultGrid({ resultTabId, hiddenColumns, sort, onHeaderClick, ed
    */
   const allResultRows = async () => {
     const rows = [...snapshot.rows];
-    if (!snapshot.hasMoreRows || !snapshot.executionId) return rows;
+    if (!snapshot.hasMoreRows || !snapshot.executionId || snapshot.tablePage) return rows;
     let offset = snapshot.nextRowOffset ?? 0;
     let bytes = rows.reduce((sum, row) => sum + row.reduce((n, cell) => n + textBytes(cell), 0), 0);
     for (;;) {
@@ -393,7 +393,7 @@ export function ResultGrid({ resultTabId, hiddenColumns, sort, onHeaderClick, ed
       case "completed":
         return snapshot.commandTag
           ? `${snapshot.commandTag} 완료 · ${snapshot.affectedRows ?? 0}행 영향 · ${snapshot.durationMs}ms`
-          : `${snapshot.rows.length}행 표시${snapshot.hasMoreRows ? ` / ${snapshot.rowCount}행 · 아래로 스크롤하여 추가 조회` : ""}${snapshot.truncated ? (snapshot.pageable ? " (메모리 보호 한도 도달)" : " (행 수 또는 메모리 제한 도달)") : ""} · ${snapshot.durationMs}ms`;
+          : `${snapshot.rows.length}행 표시${snapshot.hasMoreRows ? `${snapshot.tablePage ? "" : ` / ${snapshot.rowCount}행`} · 아래로 스크롤하여 추가 조회` : ""}${snapshot.truncated ? (snapshot.pageable ? " (메모리 보호 한도 도달)" : " (행 수 또는 메모리 제한 도달)") : ""} · ${snapshot.durationMs}ms`;
       case "failed":
         return `오류: ${snapshot.error?.message ?? "unknown"}${snapshot.error?.sqlState ? ` (SQLSTATE ${snapshot.error.sqlState})` : ""}`;
       case "cancelled":

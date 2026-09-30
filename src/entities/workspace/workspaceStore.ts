@@ -300,10 +300,9 @@ export function syncSavedQueryTabs(
 }
 
 export type TableDataView = {
-  offset: number;
   sortAttribute: number | null;
   sortDescending: boolean;
 };
 
-/** Table Data paging/sort state per tab (memory only). */
+/** Table Data sort state per tab (memory only). */
 export const tableDataViews = new Map<string, TableDataView>();

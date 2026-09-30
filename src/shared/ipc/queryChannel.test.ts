@@ -8,7 +8,7 @@ import { ipc } from "./invoke";
 import { loadMoreRows, runQuery, runTableData } from "./queryChannel";
 
 vi.mock("@tauri-apps/api/core", () => ({ Channel: class<T> { onmessage: (event: T) => void = () => undefined; } }));
-vi.mock("./invoke", () => ({ ipc: { queryExecute: vi.fn(), tableDataExecute: vi.fn(), queryAckChunk: vi.fn(), resultRowsFetch: vi.fn() } }));
+vi.mock("./invoke", () => ({ ipc: { queryExecute: vi.fn(), tableDataExecute: vi.fn(), queryAckChunk: vi.fn(), resultRowsFetch: vi.fn(), tableDataFetchPage: vi.fn() } }));
 
 const request: QueryExecuteRequest = { connectionId: "A", queryTabId: "A-tab", resultTabId: "A-result", sql: "SELECT 1", maxRows: 100, timeoutMs: 1000 };
 const accepted: ExecutionAccepted = { executionId: "execution", sessionId: "session" };
@@ -143,4 +143,39 @@ it("ignores page responses for replaced results and keeps the fetch offset after
   expect(resultStore.getSnapshot("A-result").rows.map((row) => row[0])).toEqual([2, 3, 4].map((n) => ({ kind: "integer", value: String(n) })));
   expect(resultStore.getSnapshot("A-result").rowCount).toBe(3);
   expect(ipc.queryExecute).not.toHaveBeenCalled();
+});
+
+it("continues a full Table Data page by asking the backend for the next rows of the same result", async () => {
+  const row = (n: number) => [{ kind: "integer" as const, value: String(n) }];
+  const firstPage = (count: number, truncated = false) => {
+    vi.mocked(ipc.tableDataExecute).mockImplementationOnce(async (_request, channel) => {
+      channel.onmessage({ type: "started", executionId: accepted.executionId, backendPid: 1, startedAt: "2026-09-30T00:00:00Z" });
+      channel.onmessage({ type: "rows", executionId: accepted.executionId, sequence: 0, rows: Array.from({ length: count }, (_, i) => row(i + 1)) });
+      channel.onmessage({ ...completed, rowCount: count, truncated } as QueryStreamEvent);
+      return accepted;
+    });
+    return runTableData({ connectionId: "A", queryTabId: "A-tab", resultTabId: "A-tab:data", relationOid: 42, sortAttribute: null, sortDescending: false, limit: 200, offset: 0 });
+  };
+
+  await firstPage(200);
+  expect(resultStore.getSnapshot("A-tab:data").hasMoreRows).toBe(true);
+  vi.mocked(ipc.tableDataFetchPage).mockResolvedValueOnce({ rows: [row(201), row(202)], nextOffset: 202, hasMore: true });
+  await loadMoreRows("A-tab:data");
+  expect(ipc.tableDataFetchPage).toHaveBeenLastCalledWith({ connectionId: "A", queryTabId: "A-tab", resultTabId: "A-tab:data", executionId: accepted.executionId });
+  expect(ipc.resultRowsFetch).not.toHaveBeenCalled();
+  expect(resultStore.getSnapshot("A-tab:data").rows.slice(199).map((r) => r[0])).toEqual([row(200)[0], row(201)[0], row(202)[0]]);
+  // A deleted row does not make the next request look out of order: the backend owns the position.
+  resultStore.removeRows("A-tab:data", [0]);
+  vi.mocked(ipc.tableDataFetchPage).mockResolvedValueOnce({ rows: [row(203)], nextOffset: 202, hasMore: false });
+  await loadMoreRows("A-tab:data");
+  expect(resultStore.getSnapshot("A-tab:data")).toMatchObject({ hasMoreRows: false, pageError: undefined });
+  expect(resultStore.getSnapshot("A-tab:data").rows).toHaveLength(202);
+
+  // A short or memory-truncated first page is all there is.
+  await firstPage(150);
+  expect(resultStore.getSnapshot("A-tab:data").hasMoreRows).toBe(false);
+  await firstPage(200, true);
+  expect(resultStore.getSnapshot("A-tab:data").hasMoreRows).toBe(false);
+  await loadMoreRows("A-tab:data");
+  expect(ipc.tableDataFetchPage).toHaveBeenCalledTimes(2);
 });

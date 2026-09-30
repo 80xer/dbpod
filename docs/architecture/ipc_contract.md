@@ -540,6 +540,24 @@ type QuerySessionForceCloseRequest = {
 
 다른 session은 닫지 않는다.
 
+### 10.5 `table_data_fetch_page`
+
+```ts
+type TableDataFetchPageRequest = {
+  connectionId: string
+  queryTabId: string
+  resultTabId: string
+  executionId: string
+}
+```
+
+응답: `ResultRowsFetchResponse`.
+
+- 첫 페이지의 relation·정렬·다음 offset은 Rust가 보관한다.
+- 탭 전용 세션 커넥션에서 다음 최대 200행을 조회한다.
+- 세션 사용 중이면 `QUERY_ALREADY_RUNNING`, 실행 ID·결과 불일치 시 `INVALID_REQUEST`, 컬럼 변경 시 `SCHEMA_CHANGED`를 반환한다.
+- 커밋된 insert/delete 수만큼 다음 offset을 보정한다.
+
 ## 11. Result retrieval
 
 ### 11.1 `result_value_fetch`
@@ -682,7 +700,7 @@ Permission: `dbpod:history-write`
 | SQL text | 1MiB |
 | Query row count | 고정 제한 없음 (메모리 예산 적용) |
 | Query timeout | 1시간 |
-| query result page rows | 200 (Table Data stream chunk: 첫 50 / 후속 100) |
+| query result page rows | 200 |
 | chunk soft bytes | 1MiB |
 | paste cells | 10,000 |
 | edit batch rows | 500 |

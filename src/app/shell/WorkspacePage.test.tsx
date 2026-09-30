@@ -582,24 +582,18 @@ it("runs into a fresh result when the active result has unsaved edits", async ()
   expect(tab().activeResultTabId).toBe(freshResult);
 });
 
-it("starts a newly opened Table Data tab on page one and restores each tab's own page", async () => {
+it("opens a Table Data tab as one scrollable result without page buttons", async () => {
   await mountWorkspace();
   await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Open alpha" })); });
   await waitFor(() => expect(ipc.tableDataExecute).toHaveBeenCalledTimes(1));
   const alphaTabId = workspaceStates.get("A")!.activeTabId!;
-  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "다음 페이지" })); });
-  expect(vi.mocked(ipc.tableDataExecute).mock.calls[1][0]).toMatchObject({ relationOid: 100, offset: 200 });
-  expect(screen.getByText("201–400행")).toBeTruthy();
-  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Open beta" })); });
-  await waitFor(() => expect(ipc.tableDataExecute).toHaveBeenCalledTimes(3));
-  const betaTabId = workspaceStates.get("A")!.activeTabId!;
-  expect(vi.mocked(ipc.tableDataExecute).mock.calls[2][0]).toMatchObject({ relationOid: 101, offset: 0 });
-  expect(screen.getByText("1–200행")).toBeTruthy();
-  expect(tableDataViews.get(alphaTabId)?.offset).toBe(200);
-  expect(tableDataViews.get(betaTabId)?.offset).toBe(0);
-  await act(async () => { fireEvent.click(screen.getByRole("tab", { name: "alpha" })); });
-  expect(screen.getByText("201–400행")).toBeTruthy();
-  expect(ipc.tableDataExecute).toHaveBeenCalledTimes(3);
+  expect(vi.mocked(ipc.tableDataExecute).mock.calls[0][0]).toMatchObject({ relationOid: 100, offset: 0, limit: 200 });
+  expect(screen.queryByRole("button", { name: "다음 페이지" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "이전 페이지" })).toBeNull();
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "새로고침" })); });
+  expect(ipc.tableDataExecute).toHaveBeenCalledTimes(2);
+  expect(vi.mocked(ipc.tableDataExecute).mock.calls[1][0].offset).toBe(0);
+  expect(tableDataViews.get(alphaTabId)).toEqual({ sortAttribute: null, sortDescending: false });
 });
 
 it("saves the active query by shortcut: names it once, then overwrites it silently", async () => {

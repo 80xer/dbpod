@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use crate::domain::{events::ResultRowsFetchResponse, DbValue};
+use crate::domain::events::{ColumnMeta, ResultRowsFetchResponse};
+use crate::domain::DbValue;
 use crate::error::AppError;
 
 pub const RESULT_PAGE_ROWS: usize = 200;
@@ -74,6 +75,24 @@ impl Drop for RowBudget<'_> {
     }
 }
 
+/// The catalog-validated relation and order behind a Table Data result.
+#[derive(Clone)]
+pub struct TablePageSource {
+    pub relation_oid: u32,
+    pub sort_attribute: Option<i16>,
+    pub sort_descending: bool,
+}
+
+struct TablePaging {
+    source: TablePageSource,
+    /// DB offset of the first row the WebView has not received yet.
+    next_offset: u64,
+    /// Decoded rows that did not fit the last transfer; they come next.
+    pending: Vec<Vec<DbValue>>,
+    /// Whether the table may have rows after `pending`.
+    more_after_pending: bool,
+}
+
 /// Result-owned rows and large values. Dropped on result_release / tab dispose.
 /// ponytail: rows share the result memory budget; use disk spooling
 /// if results must outgrow that budget.
@@ -81,6 +100,10 @@ impl Drop for RowBudget<'_> {
 pub struct LargeValueStore {
     map: Mutex<HashMap<String, Vec<u8>>>,
     rows: Mutex<Vec<Vec<DbValue>>>,
+    /// (name, type oid) of the result's columns; later Table Data pages must match.
+    columns: Mutex<Vec<(String, u32)>>,
+    /// Set for Table Data results only: how to fetch the page after the shown rows.
+    table_paging: Mutex<Option<TablePaging>>,
     pub execution_id: String,
     pub paged: bool,
     pub connection_id: String,
@@ -97,6 +120,8 @@ impl LargeValueStore {
             usage: Some(usage),
             map: Mutex::new(HashMap::new()),
             rows: Mutex::new(Vec::new()),
+            columns: Mutex::new(Vec::new()),
+            table_paging: Mutex::new(None),
             execution_id: uuid::Uuid::new_v4().to_string(),
             paged: false,
             retained: Mutex::new(0),
@@ -171,6 +196,85 @@ impl LargeValueStore {
         self.rows.lock().unwrap().push(row);
     }
 
+    pub fn set_columns(&self, columns: &[ColumnMeta]) {
+        *self.columns.lock().unwrap() = columns
+            .iter()
+            .map(|c| (c.name.clone(), c.pg_type_oid))
+            .collect();
+    }
+
+    /// A later page is only appendable when it has the first page's shape.
+    pub fn same_columns(&self, columns: &[ColumnMeta]) -> bool {
+        let own = self.columns.lock().unwrap();
+        own.len() == columns.len()
+            && own
+                .iter()
+                .zip(columns)
+                .all(|((name, oid), c)| *name == c.name && *oid == c.pg_type_oid)
+    }
+
+    /// Records the catalog-validated query behind a Table Data result, so the
+    /// WebView can only ask for "more of this", never for another relation.
+    pub fn set_table_source(&self, source: TablePageSource, next_offset: u64) {
+        *self.table_paging.lock().unwrap() = Some(TablePaging {
+            source,
+            next_offset,
+            pending: Vec::new(),
+            more_after_pending: false,
+        });
+    }
+
+    /// The query and DB offset for the next page, or None for other results.
+    pub fn table_source(&self) -> Option<(TablePageSource, u64)> {
+        self.table_paging
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|p| (p.source.clone(), p.next_offset))
+    }
+
+    /// Serves rows already decoded past an earlier transfer limit, in one step under
+    /// the paging lock. None when nothing is pending and the next page needs a query.
+    /// Callers hold the tab's session claim, so no query can race the queue.
+    pub fn serve_pending(&self) -> Option<Result<ResultRowsFetchResponse, AppError>> {
+        let mut guard = self.table_paging.lock().unwrap();
+        let paging = guard.as_mut()?;
+        if paging.pending.is_empty() {
+            return None;
+        }
+        let rows = std::mem::take(&mut paging.pending);
+        let more_after = paging.more_after_pending;
+        Some(split_page(paging, rows, more_after))
+    }
+
+    /// Queues one freshly decoded row the moment it is charged, so an interrupted
+    /// page leaves it here for the next request instead of dropping it.
+    pub fn push_pending(&self, row: Vec<DbValue>) {
+        if let Some(paging) = self.table_paging.lock().unwrap().as_mut() {
+            paging.pending.push(row);
+            // Until the page finishes, the table may have more after these rows.
+            paging.more_after_pending = true;
+        }
+    }
+
+    /// Ends a queried page: records whether the table has rows after it and hands
+    /// out what fits one transfer.
+    pub fn finish_table_page(&self, more_after: bool) -> Result<ResultRowsFetchResponse, AppError> {
+        let mut guard = self.table_paging.lock().unwrap();
+        let paging = guard
+            .as_mut()
+            .ok_or_else(|| AppError::invalid_request("표 데이터 결과가 아닙니다."))?;
+        let rows = std::mem::take(&mut paging.pending);
+        split_page(paging, rows, more_after)
+    }
+
+    /// Committed inserts and deletes move the rows after the shown ones.
+    pub fn shift_table_offset(&self, inserted: u64, deleted: u64) {
+        if let Some(paging) = self.table_paging.lock().unwrap().as_mut() {
+            paging.next_offset = (paging.next_offset + inserted).saturating_sub(deleted);
+        }
+    }
+
     pub fn read_rows(
         &self,
         execution_id: &str,
@@ -230,6 +334,43 @@ impl LargeValueStore {
     }
 }
 
+/// Cuts `rows` at the transfer limit, queues the remainder and advances the offset
+/// by what is handed out.
+fn split_page(
+    paging: &mut TablePaging,
+    mut rows: Vec<Vec<DbValue>>,
+    more_after: bool,
+) -> Result<ResultRowsFetchResponse, AppError> {
+    let mut bytes = 0usize;
+    let mut end = 0;
+    for row in &rows {
+        let size = serde_json::to_vec(row)
+            .map(|b| b.len())
+            .unwrap_or(usize::MAX);
+        if bytes.saturating_add(size) > MAX_FETCH_BYTES {
+            break;
+        }
+        bytes += size;
+        end += 1;
+    }
+    let rest = rows.split_off(end);
+    let has_more = more_after || !rest.is_empty();
+    paging.pending = rest;
+    paging.more_after_pending = more_after;
+    if rows.is_empty() && has_more {
+        return Err(AppError::new(
+            "ROW_TOO_LARGE",
+            "한 행이 1MiB 전송 한도를 넘어 이어서 불러올 수 없습니다.",
+        ));
+    }
+    paging.next_offset += rows.len() as u64;
+    Ok(ResultRowsFetchResponse {
+        next_offset: u32::try_from(paging.next_offset)
+            .map_err(|_| AppError::invalid_request("결과 위치가 범위를 벗어났습니다."))?,
+        rows,
+        has_more,
+    })
+}
 impl Drop for LargeValueStore {
     fn drop(&mut self) {
         if let Some(usage) = &self.usage {

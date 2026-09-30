@@ -9,7 +9,9 @@ use sqlx::{AssertSqlSafe, Connection, Either, Executor, PgConnection, Row, SqlSa
 use tokio::sync::{mpsc, oneshot, Semaphore};
 use tokio_util::sync::CancellationToken;
 
-use crate::domain::events::{ColumnMeta, QueryExecuteRequest, QueryStreamEvent, TransactionState};
+use crate::domain::events::{
+    ColumnMeta, QueryExecuteRequest, QueryStreamEvent, ResultRowsFetchResponse, TransactionState,
+};
 use crate::domain::DbValue;
 use crate::error::AppError;
 
@@ -88,6 +90,14 @@ pub enum SessionMsg {
         request: QueryExecuteRequest,
         execution: Arc<ExecutionState>,
         sink: EventSink,
+    },
+    /// Next Table Data page on the connection that produced the first one, decoded
+    /// into that result's store so its value handles stay valid.
+    FetchTablePage {
+        sql: String,
+        store: Arc<LargeValueStore>,
+        timeout_ms: u32,
+        reply: oneshot::Sender<Result<ResultRowsFetchResponse, AppError>>,
     },
     Close {
         rollback: bool,
@@ -196,6 +206,43 @@ pub fn spawn_session(
                     execution.terminal.store(true, Ordering::Release);
                     busy.store(false, Ordering::Release);
                     sink(terminal);
+                }
+                SessionMsg::FetchTablePage {
+                    sql,
+                    store,
+                    timeout_ms,
+                    reply,
+                } => {
+                    let result = match conn.as_mut() {
+                        None => Err(AppError::invalid_request(
+                            "표 데이터 세션이 닫혔습니다. 새로고침해 주세요.",
+                        )),
+                        Some(c) => {
+                            let deadline = Duration::from_millis(u64::from(timeout_ms) + 2_000);
+                            match tokio::time::timeout(deadline, fetch_table_page(c, &sql, &store))
+                                .await
+                            {
+                                Ok(result) => result,
+                                Err(_) => {
+                                    let _ = tokio::time::timeout(
+                                        Duration::from_secs(2),
+                                        cancel_backend(&opts, backend_pid.load(Ordering::Acquire)),
+                                    )
+                                    .await;
+                                    if let Some(c) = conn.take() {
+                                        let _ = c.close_hard().await;
+                                    }
+                                    backend_pid.store(0, Ordering::Release);
+                                    Err(AppError::new(
+                                        "CONNECTION_TIMEOUT",
+                                        "다음 행을 제시간에 받지 못했습니다. 새로고침해 주세요.",
+                                    ))
+                                }
+                            }
+                        }
+                    };
+                    busy.store(false, Ordering::Release);
+                    let _ = reply.send(result);
                 }
                 SessionMsg::Close { rollback, reply } => {
                     if let Some(mut c) = conn.take() {
@@ -332,6 +379,69 @@ async fn discard_broken_connection(
     *txn = TransactionState::Idle;
 }
 
+/// One Table Data page appended to an existing result, under the same row budget
+/// as the stream. Rows are decoded one at a time as they arrive and queued in the
+/// store immediately, so an interrupted page never drops a charged row.
+async fn fetch_table_page(
+    conn: &mut PgConnection,
+    sql: &str,
+    store: &LargeValueStore,
+) -> Result<ResultRowsFetchResponse, AppError> {
+    let stmt = (&mut *conn)
+        .prepare(AssertSqlSafe(sql.to_owned()).into_sql_str())
+        .await
+        .map_err(|e| AppError::from_sqlx(&e))?;
+    if !store.same_columns(&decoder::column_meta(stmt.columns())) {
+        return Err(AppError::new(
+            "SCHEMA_CHANGED",
+            "테이블 컬럼이 바뀌었습니다. 새로고침해 주세요.",
+        ));
+    }
+    let mut received = 0usize;
+    let mut decoded_any = false;
+    let mut budget_reached = false;
+    {
+        let mut stream = stmt.query().fetch(&mut *conn);
+        // Drain to the end even after the budget stops, like the query stream does.
+        while let Some(row) = stream
+            .try_next()
+            .await
+            .map_err(|e| AppError::from_sqlx(&e))?
+        {
+            received += 1;
+            if budget_reached {
+                continue;
+            }
+            let raw_bytes: usize = (0..row.len())
+                .map(|i| {
+                    row.try_get_raw(i)
+                        .ok()
+                        .and_then(|v| v.as_bytes().ok().map(|b| b.len()))
+                        .unwrap_or(0)
+                })
+                .sum();
+            // A refused row refunds its own partial reservation on drop.
+            match store
+                .reserve_row(raw_bytes, row.len())
+                .and_then(|budget| decoder::decode_row(&row, budget))
+            {
+                Some(decoded) => {
+                    store.push_pending(decoded);
+                    decoded_any = true;
+                }
+                None => budget_reached = true,
+            }
+        }
+    }
+    if budget_reached && !decoded_any {
+        return Err(AppError::new(
+            "RESULT_BUDGET_EXCEEDED",
+            "결과 메모리 한도에 도달했습니다. 정렬을 바꾸거나 쿼리로 범위를 좁혀 주세요.",
+        ));
+    }
+    store.finish_table_page(budget_reached || received == RESULT_PAGE_ROWS)
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_execution(
     conn_slot: &mut Option<PgConnection>,
@@ -424,6 +534,7 @@ async fn run_execution(
         Err(e) => fail!(AppError::from_sqlx(&e)),
     };
     let columns: Vec<ColumnMeta> = decoder::column_meta(stmt.columns());
+    exec.large.set_columns(&columns);
     let has_result_set = !columns.is_empty();
     if has_result_set {
         sink(QueryStreamEvent::Columns {

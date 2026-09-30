@@ -241,7 +241,7 @@ type QueryStreamEvent =
 ### 7.3 chunk
 
 - 쿼리 결과: 최초 200행만 Channel로 전송하고 나머지는 Rust의 보관 결과에서 스크롤 시 최대 200행씩 가져온다.
-- Table Data stream: 첫 chunk 최대 50행, 후속 chunk 100행. 기존 페이지 단위 조회를 유지한다.
+- Table Data: 첫 페이지 200행을 Channel로 전송하고, 스크롤 시 `table_data_fetch_page`로 같은 세션·같은 정렬의 다음 200행을 이어서 가져온다. 1MiB를 넘는 잉여 행은 결과에 보관해 다음 요청에서 재조회 없이 반환한다.
 - 쿼리의 `completed.rowCount`는 보관한 전체 행 수이며, 화면에 가져온 행 수와 구분한다. 추가 조회는 SQL을 재실행하지 않는다.
 - 한 chunk 직렬화 크기 soft limit: 1MiB
 - 큰 cell이 있으면 행 수보다 byte limit을 우선한다.
@@ -260,7 +260,8 @@ type QueryStreamEvent =
 - 메모리 예산(결과 512MiB / 연결 1GiB / 앱 2GiB)에 도달하면 추가 행의 보관을 중단하고 `truncated: true`와 메모리 한도 안내를 표시한다. 보존량 추정은 원본 byte 수 × 4 + 컬럼 수 × 256바이트이며, IPC chunk는 별도로 실제 직렬화 크기를 사용한다.
 - arbitrary query에는 SQL text를 자동 rewrite해 `LIMIT`을 삽입하지 않는다.
 - 보관을 중단해도 서버의 최종 결과까지 소비한다. `RETURNING`의 결과 보관 중단이 쓰기의 취소나 최종 커밋 확인 생략으로 이어지지 않는다.
-- Table Data Tab은 server-side pagination을 사용한다.
+- Table Data Tab은 Rust가 기록한 relation·정렬·offset으로 이어서 조회한다. WebView는 연결·탭·결과·실행 ID만 보낸다.
+- Table Data 내보내기와 복사는 화면에 로드된 행만 포함하며, 추가 페이지를 소비하지 않는다.
 
 ## 8. 실행 취소
 

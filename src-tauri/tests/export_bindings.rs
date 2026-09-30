@@ -77,6 +77,7 @@ fn export_ipc_types() {
     decl!(TableColumnMetadata);
     decl!(TableMetadata);
     decl!(TableDataExecuteRequest);
+    decl!(TableDataFetchPageRequest);
     decl!(TabSnapshot);
     decl!(TabGroupSnapshot);
     decl!(ConnectionSnapshot);

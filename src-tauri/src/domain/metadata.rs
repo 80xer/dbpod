@@ -117,3 +117,14 @@ pub struct TableDataExecuteRequest {
     #[ts(type = "number")]
     pub offset: u64,
 }
+
+/// Next Table Data page. Relation, sort and offset are the backend's own record of
+/// the first page; the WebView only names which result to continue.
+#[derive(Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct TableDataFetchPageRequest {
+    pub connection_id: String,
+    pub query_tab_id: String,
+    pub result_tab_id: String,
+    pub execution_id: String,
+}

@@ -31,7 +31,7 @@ export function TableDataView({ connectionId, tab, readOnly, focused, onModeChan
   const target = tab.tableData;
   const resultTabId = `${tab.id}:data`;
   const [view, setView] = useState<ViewState>(
-    () => tableDataViews.get(tab.id) ?? { offset: 0, sortAttribute: null, sortDescending: false },
+    () => tableDataViews.get(tab.id) ?? { sortAttribute: null, sortDescending: false },
   );
   const snapshot = useSyncExternalStore(
     useCallback((cb: () => void) => resultStore.subscribe(resultTabId, cb), [resultTabId]),
@@ -65,7 +65,7 @@ export function TableDataView({ connectionId, tab, readOnly, focused, onModeChan
           sortAttribute: next.sortAttribute,
           sortDescending: next.sortDescending,
           limit: PAGE_SIZE,
-          offset: next.offset,
+          offset: 0,
         });
       } catch {
         // The shared execution channel exposes the error in the result status.
@@ -96,13 +96,11 @@ export function TableDataView({ connectionId, tab, readOnly, focused, onModeChan
     if (!col) return;
     const next: ViewState =
       view.sortAttribute === col.attributeNumber && !view.sortDescending
-        ? { ...view, sortDescending: true, offset: 0 }
-        : { offset: 0, sortAttribute: col.attributeNumber, sortDescending: false };
+        ? { ...view, sortDescending: true }
+        : { sortAttribute: col.attributeNumber, sortDescending: false };
     void fetchPage(next);
   };
 
-  const pageStart = view.offset + 1;
-  const pageEnd = view.offset + snapshot.rows.length;
   const isView = meta.data?.kind === "view" || meta.data?.kind === "materialized-view";
   const modes = ([["properties", "Properties"], ["data", "Data"], ["script", "Script"]] as const)
     .filter(([mode]) => mode !== "script" || isView);
@@ -187,27 +185,6 @@ export function TableDataView({ connectionId, tab, readOnly, focused, onModeChan
             <EditBar connectionId={connectionId} resultTabId={resultTabId} editability={editability} />
           )}
           <div className="flex shrink-0 items-center gap-1 border-b border-gray-200 bg-gray-50 px-3 py-1 text-xs">
-            <button
-              type="button"
-              onClick={() => void fetchPage({ ...view, offset: Math.max(0, view.offset - PAGE_SIZE) })}
-              disabled={running || view.offset === 0}
-              className="rounded border border-gray-300 px-2 py-0.5 hover:bg-gray-100 disabled:opacity-40"
-              aria-label="이전 페이지"
-            >
-              ‹
-            </button>
-            <span className="tabular-nums text-gray-600">
-              {snapshot.rows.length > 0 ? `${pageStart}–${pageEnd}` : "0"}행
-            </span>
-            <button
-              type="button"
-              onClick={() => void fetchPage({ ...view, offset: view.offset + PAGE_SIZE })}
-              disabled={running || snapshot.rows.length < PAGE_SIZE}
-              className="rounded border border-gray-300 px-2 py-0.5 hover:bg-gray-100 disabled:opacity-40"
-              aria-label="다음 페이지"
-            >
-              ›
-            </button>
             <button
               type="button"
               onClick={() => void fetchPage(view)}

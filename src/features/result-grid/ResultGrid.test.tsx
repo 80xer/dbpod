@@ -7,7 +7,7 @@ import { editStore } from "../../entities/result/editStore";
 import { ipc } from "../../shared/ipc/invoke";
 import type { DbValue, ResultRowsFetchResponse } from "../../generated/ipc-types";
 vi.mock("@tanstack/react-virtual", () => ({ useVirtualizer: ({ count }: { count: number }) => ({ getTotalSize: () => count * 28, scrollToIndex: vi.fn(), getVirtualItems: () => Array.from({ length: count }, (_, index) => ({ index, key: index, start: index * 28, size: 28 })) }) }));
-vi.mock("../../shared/ipc/invoke", () => ({ ipc: { exportSave: vi.fn(), resultRowsFetch: vi.fn() } }));
+vi.mock("../../shared/ipc/invoke", () => ({ ipc: { exportSave: vi.fn(), resultRowsFetch: vi.fn(), tableDataFetchPage: vi.fn() } }));
 beforeEach(() => {
   vi.clearAllMocks();
   resultStore.dispose("grid"); resultStore.create("grid");
@@ -132,6 +132,49 @@ function pagedResult() {
     resultStore.setTerminal("grid", { status: "completed", rowCount: 450 });
   });
 }
+
+function tableResult() {
+  const columns = resultStore.getSnapshot("grid").columns;
+  act(() => {
+    resultStore.dispose("grid");
+    resultStore.create("grid", undefined, false, { connectionId: "A", queryTabId: "A-tab", pageSize: 200 });
+    resultStore.setStarted("grid", "table-execution");
+    resultStore.setColumns("grid", columns);
+    resultStore.appendRows("grid", 0, rows(1, 200));
+    resultStore.setTerminal("grid", { status: "completed", rowCount: 200, truncated: false });
+  });
+}
+
+test("scrolls a Table Data result into the backend's next page", async () => {
+  tableResult();
+  const grid = screen.getByRole("grid");
+  Object.defineProperties(grid, {
+    clientHeight: { value: 300 },
+    scrollHeight: { get: () => resultStore.getSnapshot("grid").rows.length * 28 },
+  });
+  expect(screen.getByText(/아래로 스크롤하여 추가 조회/).textContent).not.toContain("/ 200행");
+  vi.mocked(ipc.tableDataFetchPage).mockResolvedValueOnce({ rows: rows(201, 200), nextOffset: 400, hasMore: false });
+  grid.scrollTop = 5200;
+  await act(async () => {
+    fireEvent.scroll(grid);
+    fireEvent.scroll(grid);
+  });
+  expect(ipc.tableDataFetchPage).toHaveBeenCalledTimes(1);
+  expect(ipc.tableDataFetchPage).toHaveBeenCalledWith({ connectionId: "A", queryTabId: "A-tab", resultTabId: "grid", executionId: "table-execution" });
+  expect(ipc.resultRowsFetch).not.toHaveBeenCalled();
+  expect(resultStore.getSnapshot("grid").rows).toEqual(rows(1, 400));
+  expect(screen.getByText(/400행 표시/).textContent).not.toContain("/ 200행");
+});
+
+test("exports only loaded Table Data rows without advancing its next page", async () => {
+  tableResult();
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "JSON" })); });
+  const exported = JSON.parse(vi.mocked(ipc.exportSave).mock.calls[0][0].content);
+  expect(exported).toEqual(Array.from({ length: 200 }, (_, i) => ({ id: String(i + 1), name: `name ${i + 1}` })));
+  expect(ipc.tableDataFetchPage).not.toHaveBeenCalled();
+  expect(ipc.resultRowsFetch).not.toHaveBeenCalled();
+  expect(resultStore.getSnapshot("grid").hasMoreRows).toBe(true);
+});
 
 test("loads another 200 rows near the scroll end, deduplicates requests and retries errors", async () => {
   pagedResult();

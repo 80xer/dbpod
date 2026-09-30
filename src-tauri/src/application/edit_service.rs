@@ -654,6 +654,7 @@ pub async fn commit(
     let total = set.plans.len() as u32;
     sink(ChangesCommitEvent::Started { total_rows: total });
 
+    let paging_store = store.clone();
     let progress_sink = sink.clone();
     // Generous next to a catalog read: up to 500 statements, each already capped by
     // statement_timeout, so this deadline is here to catch a dead socket rather than
@@ -802,6 +803,9 @@ pub async fn commit(
 
     match result {
         Ok(Ok(rows)) => {
+            // Later Table Data pages continue after the shown rows, which the commit moved.
+            let count = |op: &str| rows.iter().filter(|r| r.operation == op).count() as u64;
+            paging_store.shift_table_offset(count("insert"), count("delete"));
             sink(ChangesCommitEvent::Completed { rows });
         }
         Ok(Err(event)) => {

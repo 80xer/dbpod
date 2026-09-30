@@ -5,7 +5,9 @@ use uuid::Uuid;
 
 use crate::domain::events::*;
 use crate::error::AppError;
-use crate::infrastructure::postgres::large_values::LargeValueStore;
+use crate::infrastructure::postgres::large_values::{
+    LargeValueStore, TablePageSource, RESULT_PAGE_ROWS,
+};
 use crate::infrastructure::postgres::session_actor::{
     spawn_session, EventSink, ExecutionState, SessionMsg,
 };
@@ -238,22 +240,72 @@ pub async fn table_data_execute(
     req: crate::domain::metadata::TableDataExecuteRequest,
     sink: EventSink,
 ) -> Result<ExecutionAccepted, AppError> {
-    use crate::application::metadata_service::{self, quote_ident};
-
     if req.limit == 0 || req.limit > 10_000 {
         return Err(AppError::invalid_request("limit out of range"));
     }
+    let sql = table_data_sql(
+        state,
+        &req.connection_id,
+        req.relation_oid,
+        req.sort_attribute,
+        req.sort_descending,
+        req.limit,
+        req.offset,
+    )
+    .await?;
+    let accepted = execute(
+        state,
+        QueryExecuteRequest {
+            connection_id: req.connection_id,
+            query_tab_id: req.query_tab_id,
+            result_tab_id: req.result_tab_id.clone(),
+            sql,
+            max_rows: req.limit,
+            timeout_ms: TABLE_DATA_TIMEOUT_MS,
+        },
+        sink,
+    )?;
+    // The tab's session is busy with this execution, so its store cannot be
+    // replaced before the record of how to continue it is attached.
+    if let Some(store) = state.large_values.lock().unwrap().get(&req.result_tab_id) {
+        if store.execution_id == accepted.execution_id {
+            store.set_table_source(
+                TablePageSource {
+                    relation_oid: req.relation_oid,
+                    sort_attribute: req.sort_attribute,
+                    sort_descending: req.sort_descending,
+                },
+                req.offset + u64::from(req.limit),
+            );
+        }
+    }
+    Ok(accepted)
+}
+
+const TABLE_DATA_TIMEOUT_MS: u32 = 60_000;
+
+async fn table_data_sql(
+    state: &AppState,
+    connection_id: &str,
+    relation_oid: u32,
+    sort_attribute: Option<i16>,
+    sort_descending: bool,
+    limit: u32,
+    offset: u64,
+) -> Result<String, AppError> {
+    use crate::application::metadata_service::{self, quote_ident};
+
     let meta = metadata_service::get_table(
         state,
         &crate::domain::metadata::MetadataGetTableRequest {
-            connection_id: req.connection_id.clone(),
-            relation_oid: req.relation_oid,
+            connection_id: connection_id.to_owned(),
+            relation_oid,
         },
     )
     .await?;
 
     let mut order_columns = Vec::new();
-    if let Some(att) = req.sort_attribute {
+    if let Some(att) = sort_attribute {
         let col = meta
             .columns
             .iter()
@@ -262,11 +314,11 @@ pub async fn table_data_execute(
         order_columns.push(format!(
             "{} {}",
             quote_ident(&col.name),
-            if req.sort_descending { "DESC" } else { "ASC" }
+            if sort_descending { "DESC" } else { "ASC" }
         ));
     }
     for att in &meta.primary_key {
-        if Some(*att) != req.sort_attribute {
+        if Some(*att) != sort_attribute {
             if let Some(col) = meta.columns.iter().find(|c| c.attribute_number == *att) {
                 order_columns.push(quote_ident(&col.name));
             }
@@ -283,25 +335,101 @@ pub async fn table_data_execute(
     } else {
         ""
     };
-    let sql = format!(
-        "SELECT {xmin_sel}t.* FROM {}.{} t{order} LIMIT {} OFFSET {}",
+    Ok(format!(
+        "SELECT {xmin_sel}t.* FROM {}.{} t{order} LIMIT {limit} OFFSET {offset}",
         quote_ident(&meta.schema),
         quote_ident(&meta.name),
-        req.limit,
-        req.offset
-    );
-    execute(
+    ))
+}
+
+/// Holds a query tab's session for one page request; released on every exit
+/// unless the request was handed to the session, which releases it itself.
+struct SessionClaim(Option<Arc<std::sync::atomic::AtomicBool>>);
+
+impl SessionClaim {
+    fn handed_to_session(mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for SessionClaim {
+    fn drop(&mut self) {
+        if let Some(busy) = self.0.take() {
+            busy.store(false, Ordering::Release);
+        }
+    }
+}
+
+/// Next Table Data page for scrolling. Relation, order and offset come from the
+/// record `table_data_execute` attached to the result; the page runs on the tab's
+/// own session and is appended to the store the first page created.
+pub async fn table_data_fetch_page(
+    state: &AppState,
+    req: crate::domain::metadata::TableDataFetchPageRequest,
+) -> Result<ResultRowsFetchResponse, AppError> {
+    let stale = || {
+        AppError::invalid_request("이 결과는 더 이상 이어서 불러올 수 없습니다. 새로고침해 주세요.")
+    };
+    let handle = state
+        .workspaces
+        .lock()
+        .unwrap()
+        .get(&req.connection_id)
+        .ok_or_else(|| AppError::invalid_request("unknown connection"))?
+        .sessions
+        .get(&req.query_tab_id)
+        .ok_or_else(stale)?
+        .clone();
+    // Claim the session before touching the result: no execution can replace the
+    // store, and no second page request can read or refill its queue meanwhile.
+    if handle.busy.swap(true, Ordering::AcqRel) {
+        return Err(AppError::new(
+            "QUERY_ALREADY_RUNNING",
+            "이 탭에서 아직 조회 중입니다.",
+        ));
+    }
+    let claim = SessionClaim(Some(handle.busy.clone()));
+    let store = state
+        .large_values
+        .lock()
+        .unwrap()
+        .get(&req.result_tab_id)
+        .cloned()
+        .filter(|store| {
+            !store.paged
+                && store.execution_id == req.execution_id
+                && store.connection_id == req.connection_id
+                && store.query_tab_id == req.query_tab_id
+        })
+        .ok_or_else(stale)?;
+    let (source, offset) = store.table_source().ok_or_else(stale)?;
+    if let Some(page) = store.serve_pending() {
+        return page;
+    }
+    let sql = table_data_sql(
         state,
-        QueryExecuteRequest {
-            connection_id: req.connection_id,
-            query_tab_id: req.query_tab_id,
-            result_tab_id: req.result_tab_id,
-            sql,
-            max_rows: req.limit,
-            timeout_ms: 60_000,
-        },
-        sink,
+        &req.connection_id,
+        source.relation_oid,
+        source.sort_attribute,
+        source.sort_descending,
+        RESULT_PAGE_ROWS as u32,
+        offset,
     )
+    .await?;
+    let (reply, response) = tokio::sync::oneshot::channel();
+    handle
+        .tx
+        .try_send(SessionMsg::FetchTablePage {
+            sql,
+            store,
+            timeout_ms: TABLE_DATA_TIMEOUT_MS,
+            reply,
+        })
+        .map_err(|_| AppError::internal("session mailbox unavailable"))?;
+    claim.handed_to_session();
+    response
+        .await
+        .map_err(|_| AppError::internal("session closed before the page arrived"))?
 }
 
 pub fn result_value_fetch(
