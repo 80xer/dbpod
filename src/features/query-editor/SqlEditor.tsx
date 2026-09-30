@@ -1,5 +1,5 @@
 import { PostgreSQL, sql } from "@codemirror/lang-sql";
-import { autocompletion } from "@codemirror/autocomplete";
+import { acceptCompletion, autocompletion, completionStatus, startCompletion } from "@codemirror/autocomplete";
 import { indentWithTab } from "@codemirror/commands";
 import { findNext, findPrevious, gotoLine, openSearchPanel, search, selectNextOccurrence, selectSelectionMatches } from "@codemirror/search";
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
@@ -13,6 +13,20 @@ import { getAppSettings } from "../../entities/settings/appSettings";
 import { shortcutToCodeMirror } from "../../entities/settings/shortcuts";
 import { formatSqlInEditor } from "./formatSql";
 import { sqlCompletionSource } from "./sqlCompletion";
+
+/**
+ * Deleting edits a name as much as typing does, but CodeMirror only opens the list
+ * on typed input; a deletion merely keeps an open list alive. Reopen it when a
+ * deletion leaves the cursor on a name or right after a qualifier's dot. Deferred
+ * because a listener may not dispatch while the update is still being applied.
+ */
+const completeAfterDelete = EditorView.updateListener.of((update) => {
+  if (!update.docChanged || completionStatus(update.state) !== null) return;
+  if (!update.transactions.some((tr) => tr.isUserEvent("delete.backward") || tr.isUserEvent("delete.forward"))) return;
+  const { main } = update.state.selection;
+  if (!main.empty || !/[\w$.]$/.test(update.state.sliceDoc(Math.max(0, main.head - 1), main.head))) return;
+  queueMicrotask(() => startCompletion(update.view));
+});
 
 /** One keymap entry, or none when the user has cleared that shortcut. */
 function bind(shortcut: string, run: Command): KeyBinding[] {
@@ -122,9 +136,9 @@ export function SqlEditor({
           sql({ dialect: postgresWithRoutineBodies }),
           // Fuzzy, not prefix-only: names here are abbreviated and underscore-joined,
           // so the part a person remembers is rarely the part a name starts with.
-          // CodeMirror ranks a prefix first, then a word start, then scattered letters,
-          // which puts `fnn_fy_his` under `ffh` without burying it under `f`.
+          // The source filters and ranks its own options (see fuzzyMatch.ts).
           ...(connectionId && database ? [autocompletion({ override: [sqlCompletionSource(connectionId, database)] })] : []),
+          ...(connectionId && database && !readOnly ? [completeAfterDelete] : []),
           // The editor pane clips its overflow, so a completion list opening near
           // the bottom edge is cut off by the Result area below it.
           tooltips({ parent: document.body }),
@@ -151,6 +165,8 @@ export function SqlEditor({
                 return true;
               }),
               ...bind(shortcuts.formatSql, (target) => readOnly || formatSqlInEditor(target)),
+              // Opens the list on the word under the cursor without typing another letter.
+              ...(readOnly ? [] : bind(shortcuts.triggerCompletion, startCompletion)),
               ...bind(shortcuts.cancelQueryAlternate, () => {
                 cancelRef.current?.();
                 return true;
@@ -166,7 +182,8 @@ export function SqlEditor({
                   ? [{ key, run: command }]
                   : [{ key, run: command }, { key: builtIn, run: () => true }];
               }),
-              ...(readOnly ? [] : [indentWithTab]),
+              // Tab accepts an open completion like Enter; with no list open it indents.
+              ...(readOnly ? [] : [{ key: "Tab", run: acceptCompletion }, indentWithTab]),
             ]),
           ),
           EditorView.theme({

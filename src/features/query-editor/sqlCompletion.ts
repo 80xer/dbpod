@@ -1,5 +1,6 @@
 import type { Completion, CompletionContext, CompletionResult } from "@codemirror/autocomplete";
 import { ipc } from "../../shared/ipc/invoke";
+import { fuzzyResult } from "./fuzzyMatch";
 import { statementAt, stripLiterals } from "./statementSplitter";
 
 type Catalog = { schema: string; name: string; oid: number; kind: string };
@@ -68,6 +69,9 @@ export function sqlCompletionSource(connectionId: string, database: string) {
     const match = before.match(/((?:"?[\w$]+"?\.){1,2})"?[\w$]*$/);
     if (!match && !/[\w$]+$/.test(before) && !context.explicit) return null;
     const items = await catalog(connectionId, database);
+    // A leading quote opens a quoted identifier; it is not part of the name typed.
+    const result = (from: number, list: Completion[]) =>
+      fuzzyResult(from, context.state.sliceDoc(from, context.pos).replace(/^"/, ""), list);
     if (match) {
       const parts = match[1].split(".").filter(Boolean).map(unquote);
       const from = context.pos - (match[0].length - match[1].length);
@@ -79,22 +83,22 @@ export function sqlCompletionSource(connectionId: string, database: string) {
           ?? referenced.find((reference) => !reference.alias && reference.table.name.toLowerCase() === qualifier);
         if (target) {
           const columns = await tableColumns(connectionId, database, target.table.oid);
-          return { from, options: options(columns.map((label) => ({ label, detail: "column" }))), validFor: /^[\w$]*$/ };
+          return result(from, options(columns.map((label) => ({ label, detail: "column" }))));
         }
         const tables = items.filter((item) => item.schema === parts[0]);
-        return { from, options: options(tables.map((item) => ({ label: item.name, detail: item.kind }))), validFor: /^[\w$]*$/ };
+        return result(from, options(tables.map((item) => ({ label: item.name, detail: item.kind }))));
       }
       const table = items.find((item) => item.schema === parts[0] && item.name === parts[1]);
       if (!table) return null;
       const columns = await tableColumns(connectionId, database, table.oid);
-      return { from, options: options(columns.map((label) => ({ label, detail: "column" }))), validFor: /^[\w$]*$/ };
+      return result(from, options(columns.map((label) => ({ label, detail: "column" }))));
     }
     // FROM can follow the SELECT being edited, so inspect the whole statement.
     const referenced = references(statementText, items);
     if (!referenced.length) return null;
     const columns = (await Promise.all(referenced.map((reference) => tableColumns(connectionId, database, reference.table.oid)))).flat();
     const word = context.matchBefore(/[\w$]*/);
-    return { from: word?.from ?? context.pos, options: options([...new Set(columns)].map((label) => ({ label, detail: "column" }))), validFor: /^[\w$]*$/ };
+    return result(word?.from ?? context.pos, options([...new Set(columns)].map((label) => ({ label, detail: "column" }))));
   };
 }
 

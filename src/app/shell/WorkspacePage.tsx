@@ -38,7 +38,7 @@ import { ipc } from "../../shared/ipc/invoke";
 import { confirmDialog, promptText } from "../../shared/ui/prompt";
 import { runQuery } from "../../shared/ipc/queryChannel";
 import { getAppSettings } from "../../entities/settings/appSettings";
-import { displayShortcut, shortcutDigit, shortcutMatches, type ShortcutId } from "../../entities/settings/shortcuts";
+import { displayShortcut, shortcutDigit, shortcutMatches, UNBOUND, type ShortcutId } from "../../entities/settings/shortcuts";
 
 import { WorkspacePane } from "./WorkspacePane";
 
@@ -596,7 +596,7 @@ function WorkspaceContent({ connectionId }: { connectionId: string }) {
             onClick={() => cancel()}
             disabled={!running}
             className="rounded border border-gray-300 px-3 py-1 text-xs hover:bg-gray-50 disabled:opacity-40"
-            title={`${displayShortcut(shortcuts.cancelQuery)} 또는 ${displayShortcut(shortcuts.cancelQueryAlternate)}`}
+            title={[shortcuts.cancelQuery, shortcuts.cancelQueryAlternate].filter((shortcut) => shortcut !== UNBOUND).map(displayShortcut).join(" 또는 ")}
           >
             ■ 중지
           </button>

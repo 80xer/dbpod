@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { currentCompletions } from "@codemirror/autocomplete";
-import type { EditorView } from "@codemirror/view";
+import { closeCompletion, completionStatus, currentCompletions } from "@codemirror/autocomplete";
+import { runScopeHandlers, type EditorView } from "@codemirror/view";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { SqlEditor } from "./SqlEditor";
@@ -29,21 +29,22 @@ it.each([
   "SELECT * FROM cms.fnn_fy_his ORDER BY |;",
   "SELECT * FROM ext.rpt_rcv_evnt; SELECT | FROM cms.fnn_fy_his; SELECT * FROM ext.rpt_rcv_evnt;",
   "SELECT 'from ext.rpt_rcv_evnt; literal', | FROM cms.fnn_fy_his /* join ext.rpt_rcv_evnt */;",
-])("automatically suggests current-statement columns by prefix: %s", async (source) => {
+])("automatically suggests current-statement columns as letters are typed: %s", async (source) => {
   let view!: EditorView;
   const pos = source.indexOf("|");
   render(<SqlEditor initialSql={source.replace("|", "")} connectionId="completion" database="postgres"
     onViewReady={(next) => { if (next) view = next; }} />);
   view.dispatch({ changes: { from: pos, insert: "c" }, selection: { anchor: pos + 1 }, userEvent: "input.type" });
   const labels = () => currentCompletions(view.state).map((option) => option.label).sort();
-  await waitFor(() => expect(labels()).toEqual(["clsg_ym", "comp_cd"]));
+  // stk_cd has its c past the start, and still answers a single typed c.
+  await waitFor(() => expect(labels()).toEqual(["clsg_ym", "comp_cd", "stk_cd"]));
   view.dispatch({ changes: { from: pos + 1, insert: "o" }, selection: { anchor: pos + 2 }, userEvent: "input.type" });
   await waitFor(() => expect(labels()).toEqual(["comp_cd"]));
   view.dispatch({ changes: { from: pos + 1, to: pos + 2 }, selection: { anchor: pos + 1 }, userEvent: "delete.backward" });
-  await waitFor(() => expect(labels()).toEqual(["clsg_ym", "comp_cd"]));
+  await waitFor(() => expect(labels()).toEqual(["clsg_ym", "comp_cd", "stk_cd"]));
   view.dispatch({ changes: { from: pos + 1, insert: "p" }, selection: { anchor: pos + 2 }, userEvent: "input.type" });
-  // Two letters stay strict: with this little to go on, a scattered match is noise.
-  expect(labels()).toEqual([]);
+  // Two scattered letters match too, as in VS Code's Cmd+P.
+  await waitFor(() => expect(labels()).toEqual(["comp_cd"]));
 });
 
 it.each([
@@ -53,9 +54,12 @@ it.each([
   ["cpc", ["comp_cd"]],
   // The initials of the underscore-joined parts.
   ["scd", ["stk_cd"]],
+  // Nothing has to match the name's first letter, not even a single typed one.
+  ["y", ["clsg_ym"]],
+  ["mc", ["comp_cd"]],
   // Letters the name does not have, or has out of order, still match nothing.
   ["czz", []],
-  ["mc", []],
+  ["dc", []],
 ] as const)("completes columns on scattered letters, not only on a prefix: %s", async (typed, expected) => {
   let view!: EditorView;
   const source = "SELECT  FROM cms.fnn_fy_his;";
@@ -64,6 +68,76 @@ it.each([
     onViewReady={(next) => { if (next) view = next; }} />);
   view.dispatch({ changes: { from: pos, insert: typed }, selection: { anchor: pos + typed.length }, userEvent: "input.type" });
   await waitFor(() => expect(currentCompletions(view.state).map((option) => option.label).sort()).toEqual([...expected]));
+});
+
+it.each([
+  ["s", ["stk_cd", "clsg_ym"]],
+  ["cd", ["comp_cd", "stk_cd"]],
+] as const)("lists the name whose match starts earliest first: %s", async (typed, expected) => {
+  let view!: EditorView;
+  const source = "SELECT  FROM cms.fnn_fy_his;";
+  const pos = source.indexOf(" FROM");
+  render(<SqlEditor initialSql={source} connectionId="completion" database="postgres"
+    onViewReady={(next) => { if (next) view = next; }} />);
+  view.dispatch({ changes: { from: pos, insert: typed }, selection: { anchor: pos + typed.length }, userEvent: "input.type" });
+  await waitFor(() => expect(currentCompletions(view.state).map((option) => option.label)).toEqual([...expected]));
+});
+
+it("accepts the selected completion with Tab, and indents when no list is open", async () => {
+  let view!: EditorView;
+  const source = "SELECT * FROM cms.";
+  render(<SqlEditor initialSql={source} connectionId="completion" database="postgres"
+    onViewReady={(next) => { if (next) view = next; }} />);
+  const tab = () => runScopeHandlers(view, new KeyboardEvent("keydown", { key: "Tab", code: "Tab", keyCode: 9 }), "editor");
+  view.dispatch({ changes: { from: source.length, insert: "ffh" }, selection: { anchor: source.length + 3 }, userEvent: "input.type" });
+  await waitFor(() => expect(currentCompletions(view.state).map((option) => option.label)).toEqual(["fnn_fy_his"]));
+  // CodeMirror ignores an accept that lands right as the list opens; step past that delay.
+  const now = Date.now();
+  const clock = vi.spyOn(Date, "now").mockReturnValue(now + 1000);
+  try {
+    expect(tab()).toBe(true);
+  } finally {
+    clock.mockRestore();
+  }
+  expect(view.state.doc.toString()).toBe("SELECT * FROM cms.fnn_fy_his");
+
+  view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: "" }, selection: { anchor: 0 } });
+  expect(tab()).toBe(true);
+  expect(view.state.doc.toString()).not.toBe("");
+});
+
+it("opens completion on the word under the cursor with Mod+Period, without typing", async () => {
+  let view!: EditorView;
+  const source = "SELECT * FROM cms.fh";
+  render(<SqlEditor initialSql={source} connectionId="completion" database="postgres"
+    onViewReady={(next) => { if (next) view = next; }} />);
+  view.dispatch({ selection: { anchor: source.length } });
+  expect(currentCompletions(view.state)).toEqual([]);
+  // jsdom is not a Mac, so Mod is Ctrl here.
+  expect(runScopeHandlers(view, new KeyboardEvent("keydown", { key: ".", code: "Period", ctrlKey: true }), "editor")).toBe(true);
+  await waitFor(() => expect(currentCompletions(view.state).map((option) => option.label)).toEqual(["fnn_fy_his"]));
+});
+
+it("opens completion when a deletion leaves the cursor on a name, not in whitespace", async () => {
+  let view!: EditorView;
+  const source = "SELECT * FROM cms.ffhx";
+  render(<SqlEditor initialSql={source} connectionId="completion" database="postgres"
+    onViewReady={(next) => { if (next) view = next; }} />);
+  const backspace = () => {
+    const head = view.state.selection.main.head;
+    view.dispatch({ changes: { from: head - 1, to: head }, selection: { anchor: head - 1 }, userEvent: "delete.backward" });
+  };
+  view.dispatch({ selection: { anchor: source.length } });
+  expect(completionStatus(view.state)).toBeNull();
+  backspace();
+  await waitFor(() => expect(currentCompletions(view.state).map((option) => option.label)).toEqual(["fnn_fy_his"]));
+
+  closeCompletion(view);
+  view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: "SELECT * x" }, selection: { anchor: 10 } });
+  backspace();
+  // The reopen is queued as a microtask, so one flush is enough to see it would have fired.
+  await Promise.resolve();
+  expect(completionStatus(view.state)).toBeNull();
 });
 
 it("completes a table on the initials of its underscore-joined parts", async () => {
@@ -76,8 +150,8 @@ it("completes a table on the initials of its underscore-joined parts", async () 
 });
 
 it.each([
-  ["SELECT | FROM cms.fnn_fy_his JOIN ext.rpt_rcv_evnt ON true;", "c", ["clsg_ym", "comp_cd", "created_at"]],
-  ["SELECT * FROM cms.fnn_fy_his WHERE |;", "C", ["clsg_ym", "comp_cd"]],
+  ["SELECT | FROM cms.fnn_fy_his JOIN ext.rpt_rcv_evnt ON true;", "c", ["clsg_ym", "comp_cd", "created_at", "stk_cd"]],
+  ["SELECT * FROM cms.fnn_fy_his WHERE |;", "C", ["clsg_ym", "comp_cd", "stk_cd"]],
   ["SELECT * FROM cms|", ".", ["ext", "fnn_fy_his"]],
   ["SELECT cms.fnn_fy_his| FROM cms.fnn_fy_his;", ".", ["clsg_ym", "comp_cd", "stk_cd"]],
   // An alias resolves to its own table, from either side of the statement.

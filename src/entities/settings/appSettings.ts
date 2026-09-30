@@ -33,6 +33,13 @@ function load(): AppSettings {
   if (typeof localStorage === "undefined") return defaultAppSettings;
   try {
     const value = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "null") as Partial<AppSettings> | null;
+    // Settings saved before completion took Mod+Period still hold it as the
+    // alternate cancel, which would shadow the new binding. Only those lose it:
+    // once triggerCompletion is stored, the pair was chosen together.
+    const stored: Partial<ShortcutSettings> | undefined = value?.shortcuts;
+    if (value && stored && stored.triggerCompletion === undefined && stored.cancelQueryAlternate === "Mod+Period") {
+      value.shortcuts = { ...stored, cancelQueryAlternate: "" } as ShortcutSettings;
+    }
     return {
       theme: value && ["system", "light", "dark"].includes(value.theme ?? "") ? value.theme as AppTheme : defaultAppSettings.theme,
       font: value && appFonts.some((option) => option.value === value.font) ? value.font as AppFont : defaultAppSettings.font,

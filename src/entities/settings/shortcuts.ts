@@ -2,9 +2,11 @@ export const shortcutDefinitions = [
   { id: "runQuery", label: "현재 SQL 실행", defaultValue: "Mod+Enter", group: "실행" },
   { id: "runQueryNew", label: "새 Result에서 실행", defaultValue: "Mod+Shift+Enter", group: "실행" },
   { id: "cancelQuery", label: "실행 취소", defaultValue: "Escape", group: "실행" },
-  { id: "cancelQueryAlternate", label: "실행 취소 (보조)", defaultValue: "Mod+Period", group: "실행" },
+  // Unbound by default: Mod+Period opens completion instead.
+  { id: "cancelQueryAlternate", label: "실행 취소 (보조)", defaultValue: "", group: "실행" },
   { id: "saveQuery", label: "현재 쿼리 저장", defaultValue: "Mod+KeyS", group: "편집기" },
   { id: "formatSql", label: "현재 SQL 포맷", defaultValue: "Mod+Shift+KeyF", group: "편집기" },
+  { id: "triggerCompletion", label: "자동완성 열기", defaultValue: "Mod+Period", group: "편집기" },
   { id: "findInEditor", label: "찾기", defaultValue: "Mod+KeyF", group: "편집기" },
   { id: "findNext", label: "다음 찾기", defaultValue: "Mod+KeyG", group: "편집기" },
   { id: "findPrevious", label: "이전 찾기", defaultValue: "Mod+Shift+KeyG", group: "편집기" },
