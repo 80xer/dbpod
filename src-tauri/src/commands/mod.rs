@@ -1,7 +1,7 @@
 // Thin Tauri adapters: deserialize, validate, call the application service,
 // serialize AppError. No business rules here.
-use std::sync::Arc;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::Command;
 use ts_rs::TS;
@@ -29,14 +29,45 @@ pub struct AiChatRequest {
 }
 #[derive(Debug, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct AiChatCancelRequest { pub request_id: String }
+pub struct AiChatCancelRequest {
+    pub request_id: String,
+}
 #[derive(Debug, Clone, Serialize, TS)]
-#[serde(rename_all = "camelCase", rename_all_fields = "camelCase", tag = "type")]
-pub enum AiChatEvent { Chunk { text: String }, Progress { text: String }, Session { id: String }, Approval { #[ts(type = "number")] approval_id: i64, message: String, detail: Option<String> }, Completed, Failed { message: String } }
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "type"
+)]
+pub enum AiChatEvent {
+    Chunk {
+        text: String,
+    },
+    Progress {
+        text: String,
+    },
+    Session {
+        id: String,
+    },
+    Approval {
+        #[ts(type = "number")]
+        approval_id: i64,
+        message: String,
+        detail: Option<String>,
+    },
+    Completed,
+    Failed {
+        message: String,
+    },
+}
 
 #[derive(Debug, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct AiChatApproveRequest { pub request_id: String, #[ts(type = "number")] pub approval_id: i64, pub approved: bool }
+pub struct AiChatApproveRequest {
+    pub request_id: String,
+    #[ts(type = "number")]
+    pub approval_id: i64,
+    pub approved: bool,
+}
 
 /// Read-only tools the AI panel may use. `claude -p` is non-interactive, so
 /// nobody is there to answer a permission prompt and anything not listed here
@@ -70,10 +101,16 @@ pub async fn ai_chat(
     request: AiChatRequest,
     on_event: Channel<AiChatEvent>,
 ) -> Result<String, AppError> {
-    if !["claude", "codex"].contains(&request.provider.as_str()) || request.prompt.trim().is_empty() {
-        return Err(AppError::invalid_request("AI provider and prompt are required"));
+    if !["claude", "codex"].contains(&request.provider.as_str()) || request.prompt.trim().is_empty()
+    {
+        return Err(AppError::invalid_request(
+            "AI provider and prompt are required",
+        ));
     }
-    let request_id = request.request_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let request_id = request
+        .request_id
+        .clone()
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     if request.provider == "codex" {
         run_codex_app_server(state, request_id.clone(), request, on_event).await?;
         return Ok(request_id);
@@ -109,7 +146,10 @@ pub async fn ai_chat(
     // The prompt is a positional argument, so it has to come last, behind the
     // separator: a prompt opening with a SQL comment reads as an option without it.
     command.args(["--", &request.prompt]);
-    command.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+    command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
     // Drop alone leaves the child running: without this an early return orphans a CLI
     // that still holds the session and goes on talking to the provider.
     command.kill_on_drop(true);
@@ -140,11 +180,15 @@ pub async fn ai_chat_cancel(
     };
     #[cfg(target_family = "unix")]
     {
-        let _ = std::process::Command::new("kill").args(["-9", &pid.to_string()]).status();
+        let _ = std::process::Command::new("kill")
+            .args(["-9", &pid.to_string()])
+            .status();
     }
     #[cfg(target_family = "windows")]
     {
-        let _ = std::process::Command::new("taskkill").args(["/T", "/F", "/PID", &pid.to_string()]).status();
+        let _ = std::process::Command::new("taskkill")
+            .args(["/T", "/F", "/PID", &pid.to_string()])
+            .status();
     }
     Ok(true)
 }
@@ -159,10 +203,17 @@ pub async fn ai_chat_approve(
         .ai_chat_jobs
         .lock()
         .map_err(|_| AppError::internal("AI 승인 상태를 확인할 수 없습니다"))?;
-    let Some(approvals) = jobs.get(&request.request_id).and_then(|job| job.approvals.as_ref()) else {
+    let Some(approvals) = jobs
+        .get(&request.request_id)
+        .and_then(|job| job.approvals.as_ref())
+    else {
         return Ok(false);
     };
-    let action = if request.approved { "accept" } else { "decline" };
+    let action = if request.approved {
+        "accept"
+    } else {
+        "decline"
+    };
     Ok(approvals
         .send(serde_json::json!({"id": request.approval_id, "result": {"action": action}}))
         .is_ok())
@@ -203,7 +254,10 @@ fn register_job<'a>(
         return Err(AppError::invalid_request("이미 실행 중인 AI 요청입니다"));
     }
     jobs.insert(request_id.to_string(), job);
-    Ok(JobGuard { jobs: &state.ai_chat_jobs, request_id: request_id.to_string() })
+    Ok(JobGuard {
+        jobs: &state.ai_chat_jobs,
+        request_id: request_id.to_string(),
+    })
 }
 
 async fn command_execute_with_cancel(
@@ -212,23 +266,47 @@ async fn command_execute_with_cancel(
     mut command: Command,
     on_event: Channel<AiChatEvent>,
 ) -> Result<(), AppError> {
-    let mut child = command
-        .spawn()
-        .map_err(|e| AppError::new("AI_UNAVAILABLE", format!("{} CLI를 실행할 수 없습니다: {e}", command.as_std().get_program().to_string_lossy())))?;
+    let mut child = command.spawn().map_err(|e| {
+        AppError::new(
+            "AI_UNAVAILABLE",
+            format!(
+                "{} CLI를 실행할 수 없습니다: {e}",
+                command.as_std().get_program().to_string_lossy()
+            ),
+        )
+    })?;
     let pid = child
         .id()
         .and_then(|id| i32::try_from(id).ok())
         .ok_or_else(|| AppError::internal("AI 프로세스 id를 읽지 못했습니다"))?;
-    let stdout = child.stdout.take().ok_or_else(|| AppError::internal("AI stdout unavailable"))?;
-    let mut stderr = child.stderr.take().ok_or_else(|| AppError::internal("AI stderr unavailable"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| AppError::internal("AI stdout unavailable"))?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| AppError::internal("AI stderr unavailable"))?;
     let stderr_task = tokio::spawn(async move {
         let mut bytes = Vec::new();
         let _ = stderr.read_to_end(&mut bytes).await;
         bytes
     });
     let mut lines = BufReader::new(stdout).lines();
-    let _job = register_job(&state, &request_id, crate::state::AiChatJob { pid, canceled: false, approvals: None })?;
-    while let Some(line) = lines.next_line().await.map_err(|e| AppError::new("AI_FAILED", e.to_string()))? {
+    let _job = register_job(
+        &state,
+        &request_id,
+        crate::state::AiChatJob {
+            pid,
+            canceled: false,
+            approvals: None,
+        },
+    )?;
+    while let Some(line) = lines
+        .next_line()
+        .await
+        .map_err(|e| AppError::new("AI_FAILED", e.to_string()))?
+    {
         if state
             .ai_chat_jobs
             .lock()
@@ -244,7 +322,10 @@ async fn command_execute_with_cancel(
             let _ = on_event.send(AiChatEvent::Progress { text });
         }
     }
-    let status = child.wait().await.map_err(|e| AppError::new("AI_FAILED", e.to_string()))?;
+    let status = child
+        .wait()
+        .await
+        .map_err(|e| AppError::new("AI_FAILED", e.to_string()))?;
     // Read the flag, leave the entry to the guard: removing it here and again on drop
     // would delete the next request that reuses this id in between.
     let canceled = state
@@ -258,7 +339,10 @@ async fn command_execute_with_cancel(
         return Ok(());
     }
     if !status.success() {
-        return Err(AppError::new("AI_FAILED", String::from_utf8_lossy(&stderr).trim().to_string()));
+        return Err(AppError::new(
+            "AI_FAILED",
+            String::from_utf8_lossy(&stderr).trim().to_string(),
+        ));
     }
     let _ = on_event.send(AiChatEvent::Completed);
     Ok(())
@@ -279,52 +363,114 @@ async fn run_codex_app_server(
         // each one would otherwise orphan an app-server holding the thread's lock.
         .kill_on_drop(true)
         .spawn()
-        .map_err(|e| AppError::new("AI_UNAVAILABLE", format!("Codex app-server를 실행할 수 없습니다: {e}")))?;
+        .map_err(|e| {
+            AppError::new(
+                "AI_UNAVAILABLE",
+                format!("Codex app-server를 실행할 수 없습니다: {e}"),
+            )
+        })?;
     let pid = child
         .id()
         .and_then(|id| i32::try_from(id).ok())
         .ok_or_else(|| AppError::internal("Codex app-server 프로세스 id를 읽지 못했습니다"))?;
-    let mut input = child.stdin.take().ok_or_else(|| AppError::internal("Codex stdin unavailable"))?;
-    let stdout = child.stdout.take().ok_or_else(|| AppError::internal("Codex stdout unavailable"))?;
+    let mut input = child
+        .stdin
+        .take()
+        .ok_or_else(|| AppError::internal("Codex stdin unavailable"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| AppError::internal("Codex stdout unavailable"))?;
     let mut lines = BufReader::new(stdout).lines();
-    let (approval_tx, mut approval_rx) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
-    let _job = register_job(&state, &request_id, crate::state::AiChatJob { pid, canceled: false, approvals: Some(approval_tx) })?;
-    async fn send(input: &mut tokio::process::ChildStdin, value: serde_json::Value) -> Result<(), AppError> {
+    let (approval_tx, mut approval_rx) =
+        tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
+    let _job = register_job(
+        &state,
+        &request_id,
+        crate::state::AiChatJob {
+            pid,
+            canceled: false,
+            approvals: Some(approval_tx),
+        },
+    )?;
+    async fn send(
+        input: &mut tokio::process::ChildStdin,
+        value: serde_json::Value,
+    ) -> Result<(), AppError> {
         use tokio::io::AsyncWriteExt;
-        input.write_all(format!("{}\n", value).as_bytes()).await.map_err(|e| AppError::new("AI_FAILED", e.to_string()))?;
-        input.flush().await.map_err(|e| AppError::new("AI_FAILED", e.to_string()))?;
+        input
+            .write_all(format!("{}\n", value).as_bytes())
+            .await
+            .map_err(|e| AppError::new("AI_FAILED", e.to_string()))?;
+        input
+            .flush()
+            .await
+            .map_err(|e| AppError::new("AI_FAILED", e.to_string()))?;
         Ok(())
     }
     send(&mut input, serde_json::json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"dbpod","version":"0.1"}}})).await?;
-    while let Some(line) = lines.next_line().await.map_err(|e| AppError::new("AI_FAILED", e.to_string()))? {
-        if serde_json::from_str::<serde_json::Value>(&line).ok().and_then(|v| v.get("id").and_then(|id| id.as_i64())) == Some(1) {
+    while let Some(line) = lines
+        .next_line()
+        .await
+        .map_err(|e| AppError::new("AI_FAILED", e.to_string()))?
+    {
+        if serde_json::from_str::<serde_json::Value>(&line)
+            .ok()
+            .and_then(|v| v.get("id").and_then(|id| id.as_i64()))
+            == Some(1)
+        {
             break;
         }
     }
-    let model = if request.model == "default" { serde_json::Value::Null } else { serde_json::Value::String(request.model.clone()) };
+    let model = if request.model == "default" {
+        serde_json::Value::Null
+    } else {
+        serde_json::Value::String(request.model.clone())
+    };
     // Codex keeps the conversation in its own thread, so a follow-up resumes the
     // thread instead of restating what was already said.
     let start = match &request.session_id {
-        Some(existing) => serde_json::json!({"id":2,"method":"thread/resume","params":{"threadId":existing,"cwd":".","approvalPolicy":"on-request","sandbox":"read-only"}}),
-        None => serde_json::json!({"id":2,"method":"thread/start","params":{"model":model,"cwd":".","approvalPolicy":"on-request","sandbox":"read-only"}}),
+        Some(existing) => {
+            serde_json::json!({"id":2,"method":"thread/resume","params":{"threadId":existing,"cwd":".","approvalPolicy":"on-request","sandbox":"read-only"}})
+        }
+        None => {
+            serde_json::json!({"id":2,"method":"thread/start","params":{"model":model,"cwd":".","approvalPolicy":"on-request","sandbox":"read-only"}})
+        }
     };
     send(&mut input, start).await?;
     let mut thread_id = None;
-    while let Some(line) = lines.next_line().await.map_err(|e| AppError::new("AI_FAILED", e.to_string()))? {
+    while let Some(line) = lines
+        .next_line()
+        .await
+        .map_err(|e| AppError::new("AI_FAILED", e.to_string()))?
+    {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
             if v.get("id").and_then(|id| id.as_i64()) == Some(2) {
                 if let Some(message) = v.pointer("/error/message").and_then(|m| m.as_str()) {
-                    return Err(AppError::new("AI_FAILED", format!("Codex 대화를 이어가지 못했습니다: {message}")));
+                    return Err(AppError::new(
+                        "AI_FAILED",
+                        format!("Codex 대화를 이어가지 못했습니다: {message}"),
+                    ));
                 }
-                thread_id = v.pointer("/result/thread/id").and_then(|id| id.as_str()).map(str::to_owned)
+                thread_id = v
+                    .pointer("/result/thread/id")
+                    .and_then(|id| id.as_str())
+                    .map(str::to_owned)
                     .or_else(|| request.session_id.clone());
                 break;
             }
         }
     }
-    let thread_id = thread_id.ok_or_else(|| AppError::new("AI_FAILED", "Codex thread를 시작하지 못했습니다"))?;
-    let _ = on_event.send(AiChatEvent::Session { id: thread_id.clone() });
-    let reasoning = if request.thinking == "auto" { serde_json::Value::Null } else { serde_json::Value::String(request.thinking.clone()) };
+    let thread_id = thread_id
+        .ok_or_else(|| AppError::new("AI_FAILED", "Codex thread를 시작하지 못했습니다"))?;
+    let _ = on_event.send(AiChatEvent::Session {
+        id: thread_id.clone(),
+    });
+    let reasoning = if request.thinking == "auto" {
+        serde_json::Value::Null
+    } else {
+        serde_json::Value::String(request.thinking.clone())
+    };
     send(&mut input, serde_json::json!({"id":3,"method":"turn/start","params":{"threadId":thread_id,"input":[{"type":"text","text":request.prompt}],"reasoningEffort":reasoning}})).await?;
     loop {
         // The turn blocks on an approval, so answers have to reach stdin while
@@ -356,7 +502,10 @@ async fn run_codex_app_server(
         // that only watches for notifications would wait for output that never comes.
         if value.get("id").and_then(|id| id.as_i64()) == Some(3) {
             if let Some(message) = value.pointer("/error/message").and_then(|m| m.as_str()) {
-                return Err(AppError::new("AI_FAILED", format!("Codex가 요청을 처리하지 못했습니다: {message}")));
+                return Err(AppError::new(
+                    "AI_FAILED",
+                    format!("Codex가 요청을 처리하지 못했습니다: {message}"),
+                ));
             }
         }
         match value.get("method").and_then(|m| m.as_str()) {
@@ -367,7 +516,9 @@ async fn run_codex_app_server(
             }
             Some("turn/completed") | Some("turn/failed") => break,
             Some("item/started") => {
-                let _ = on_event.send(AiChatEvent::Progress { text: "Codex 작업 중…".into() });
+                let _ = on_event.send(AiChatEvent::Progress {
+                    text: "Codex 작업 중…".into(),
+                });
             }
             Some("mcpServer/elicitation/request") => {
                 if let Some(approval_id) = value.get("id").and_then(|id| id.as_i64()) {
@@ -401,7 +552,10 @@ async fn run_codex_app_server(
     // Closing stdin lets app-server exit on its own and release the thread's
     // writer lock; killing it strands the lock and the next turn cannot resume.
     drop(input);
-    if tokio::time::timeout(std::time::Duration::from_secs(10), child.wait()).await.is_err() {
+    if tokio::time::timeout(std::time::Duration::from_secs(10), child.wait())
+        .await
+        .is_err()
+    {
         let _ = child.kill().await;
     }
     Ok(())
@@ -409,21 +563,84 @@ async fn run_codex_app_server(
 
 fn stream_text(line: &str) -> Option<String> {
     let value: serde_json::Value = serde_json::from_str(line).ok()?;
-    value.get("delta").and_then(|v| v.get("text")).and_then(|v| v.as_str()).map(str::to_owned)
-        .or_else(|| value.get("item").and_then(|v| v.get("text")).and_then(|v| v.as_str()).map(str::to_owned))
-        .or_else(|| value.get("content_block_delta").and_then(|v| v.get("delta")).and_then(|v| v.get("text")).and_then(|v| v.as_str()).map(str::to_owned))
-        .or_else(|| value.get("item").and_then(|v| (v.get("type").and_then(|kind| kind.as_str()) == Some("agent_message")).then(|| v.get("text").and_then(|text| text.as_str()))).flatten().map(str::to_owned))
-        .or_else(|| value.get("error").and_then(|v| v.get("message")).and_then(|v| v.as_str()).map(str::to_owned))
-        .or_else(|| value.get("event").and_then(|event| event.get("delta")).and_then(|v| v.get("text")).and_then(|v| v.as_str()).map(str::to_owned))
+    value
+        .get("delta")
+        .and_then(|v| v.get("text"))
+        .and_then(|v| v.as_str())
+        .map(str::to_owned)
+        .or_else(|| {
+            value
+                .get("item")
+                .and_then(|v| v.get("text"))
+                .and_then(|v| v.as_str())
+                .map(str::to_owned)
+        })
+        .or_else(|| {
+            value
+                .get("content_block_delta")
+                .and_then(|v| v.get("delta"))
+                .and_then(|v| v.get("text"))
+                .and_then(|v| v.as_str())
+                .map(str::to_owned)
+        })
+        .or_else(|| {
+            value
+                .get("item")
+                .and_then(|v| {
+                    (v.get("type").and_then(|kind| kind.as_str()) == Some("agent_message"))
+                        .then(|| v.get("text").and_then(|text| text.as_str()))
+                })
+                .flatten()
+                .map(str::to_owned)
+        })
+        .or_else(|| {
+            value
+                .get("error")
+                .and_then(|v| v.get("message"))
+                .and_then(|v| v.as_str())
+                .map(str::to_owned)
+        })
+        .or_else(|| {
+            value
+                .get("event")
+                .and_then(|event| event.get("delta"))
+                .and_then(|v| v.get("text"))
+                .and_then(|v| v.as_str())
+                .map(str::to_owned)
+        })
 }
 
 fn stream_progress(line: &str) -> Option<String> {
     let value: serde_json::Value = serde_json::from_str(line).ok()?;
     match value.get("type").and_then(|v| v.as_str()) {
-        Some("system") if value.get("subtype").and_then(|v| v.as_str()) == Some("hook_started") => Some(format!("준비 중: {}", value.get("hook_name").and_then(|v| v.as_str()).unwrap_or("작업"))),
-        Some("system") if value.get("subtype").and_then(|v| v.as_str()) == Some("status") => Some("요청 처리 중…".into()),
-        Some("stream_event") if value.pointer("/event/content_block_start/content_block/type").and_then(|v| v.as_str()) == Some("thinking") => Some("생각 중…".into()),
-        Some("stream_event") if value.pointer("/event/content_block_start/content_block/type").and_then(|v| v.as_str()) == Some("tool_use") => Some("도구 실행 중…".into()),
+        Some("system") if value.get("subtype").and_then(|v| v.as_str()) == Some("hook_started") => {
+            Some(format!(
+                "준비 중: {}",
+                value
+                    .get("hook_name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("작업")
+            ))
+        }
+        Some("system") if value.get("subtype").and_then(|v| v.as_str()) == Some("status") => {
+            Some("요청 처리 중…".into())
+        }
+        Some("stream_event")
+            if value
+                .pointer("/event/content_block_start/content_block/type")
+                .and_then(|v| v.as_str())
+                == Some("thinking") =>
+        {
+            Some("생각 중…".into())
+        }
+        Some("stream_event")
+            if value
+                .pointer("/event/content_block_start/content_block/type")
+                .and_then(|v| v.as_str())
+                == Some("tool_use") =>
+        {
+            Some("도구 실행 중…".into())
+        }
         Some("item.started") | Some("turn.started") => Some("작업 중…".into()),
         _ => None,
     }

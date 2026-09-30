@@ -182,7 +182,5 @@ async fn temporal_extremes_ranges_and_unknown_binary_are_safe_and_faithful() {
         row.try_get_raw(0).unwrap().format(),
         sqlx::postgres::PgValueFormat::Text
     );
-    assert!(
-        matches!(&decode(&row, &large)[0], DbValue::Unknown { value, .. } if value == "(0,0)")
-    );
+    assert!(matches!(&decode(&row, &large)[0], DbValue::Unknown { value, .. } if value == "(0,0)"));
 }

@@ -1311,12 +1311,9 @@ async fn reconnect_cancels_the_query_it_interrupts() {
 
     let (_node, state) = setup().await;
     let (sink, mut rx) = sink_channel();
-    let accepted = query_service::execute(
-        &state,
-        req("t-reconnect", "SELECT pg_sleep(20)", 10),
-        sink,
-    )
-    .unwrap();
+    let accepted =
+        query_service::execute(&state, req("t-reconnect", "SELECT pg_sleep(20)", 10), sink)
+            .unwrap();
 
     // Let the backend reach the sleep, so the reconnect interrupts a running query
     // rather than racing the dispatch.

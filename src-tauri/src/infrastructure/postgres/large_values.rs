@@ -70,8 +70,7 @@ impl Drop for RowBudget<'_> {
         if self.kept {
             return;
         }
-        self.store
-            .release(self.reserved.saturating_sub(self.wire));
+        self.store.release(self.reserved.saturating_sub(self.wire));
     }
 }
 
