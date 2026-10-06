@@ -6,9 +6,10 @@ import { emptyWorkspace, workspaceReducer, workspaceStates } from "../../entitie
 import { editStore } from "../../entities/result/editStore";
 import { openConnections } from "../../entities/connection/openConnections";
 import type { ConnectionProfile } from "../../generated/ipc-types";
+import type { ComponentProps } from "react";
 const mock = vi.hoisted(() => ({ handler: undefined as undefined | ((event: { preventDefault: () => void }) => Promise<void>), save: vi.fn(), close: vi.fn(), destroy: vi.fn(), navigate: vi.fn(), params: {} as { connectionId?: string } }));
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ onCloseRequested: async (handler: typeof mock.handler) => { mock.handler = handler; return () => {}; }, destroy: mock.destroy }) }));
-vi.mock("@tanstack/react-router", () => ({ Link: () => null, Outlet: () => null, useParams: () => mock.params, useNavigate: () => mock.navigate }));
+vi.mock("@tanstack/react-router", () => ({ Link: ({ children, to, className, title, "aria-label": label }: ComponentProps<"a"> & { to: string }) => <a href={to} className={className} title={title} aria-label={label}>{children}</a>, Outlet: () => null, useParams: () => mock.params, useNavigate: () => mock.navigate }));
 vi.mock("../../shared/ipc/invoke", () => ({ ipc: { connectionClose: mock.close } }));
 vi.mock("../../entities/workspace/persistence", () => ({ getPersistenceError: () => "", subscribePersistence: () => () => {}, saveWorkspaceNow: mock.save }));
 beforeEach(() => {
@@ -72,6 +73,18 @@ const profile = (name: string): ConnectionProfile => ({
   id: `p-${name}`, name, environment: "dev", color: null, host: "localhost", port: 5432,
   database: "dbpod", username: "tester", tlsMode: "insecure", readOnly: false,
   queryTimeoutMs: 1000, maxRows: 100, hasStoredCredential: false,
+});
+
+test.each([false, true])("settings stays at the bottom of the HOME rail with open connections: %s", (connected) => {
+  if (connected) openConnections.set("a", profile("A"));
+  render(<AppShell />);
+  const settings = screen.getByRole("link", { name: "설정" });
+  const rail = screen.getByRole("navigation", { name: "열린 연결" });
+  expect(rail.contains(screen.getByRole("link", { name: "HOME" }))).toBe(true);
+  expect(rail.lastElementChild).toBe(settings);
+  expect(settings.classList.contains("mt-auto")).toBe(true);
+  expect(settings.getAttribute("href")).toBe("/settings");
+  expect(document.querySelector("header")?.contains(settings)).toBe(false);
 });
 
 test("the connection keys step through the rail in order and wrap at both ends", () => {

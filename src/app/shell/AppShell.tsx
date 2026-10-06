@@ -15,7 +15,6 @@ import { confirmDialog } from "../../shared/ui/prompt";
 function ConnectionRail() {
   const connections = useOpenConnections();
   const params = useParams({ strict: false }) as { connectionId?: string };
-  if (connections.length === 0) return null;
   return (
     <nav aria-label="열린 연결" className="flex w-12 shrink-0 flex-col items-center gap-2 border-r border-gray-200 bg-gray-50 py-2">
       <Link
@@ -49,6 +48,14 @@ function ConnectionRail() {
         className="flex h-8 w-8 items-center justify-center rounded-full border border-dashed border-gray-400 text-gray-500 hover:bg-gray-200"
       >
         +
+      </Link>
+      <Link
+        to="/settings"
+        title="설정"
+        aria-label="설정"
+        className="mt-auto flex h-8 w-8 shrink-0 items-center justify-center rounded text-gray-500 hover:bg-gray-200 hover:text-gray-800"
+      >
+        <span aria-hidden="true" className="text-xl leading-none">⚙</span>
       </Link>
     </nav>
   );
@@ -157,15 +164,7 @@ export function AppShell() {
           <h1 className="text-sm font-semibold tracking-tight">DBPod</h1>
         </Link>
         <span className="ml-2 text-xs text-gray-400">PostgreSQL client — MVP</span>
-        <Link
-          to="/settings"
-          title="설정"
-          aria-label="설정"
-          className="ml-auto rounded px-2 py-1 text-gray-500 hover:bg-gray-100 hover:text-gray-800"
-        >
-          <span aria-hidden="true" className="text-xl leading-none">⚙</span>
-        </Link>
-        {workspaceOpen && <button type="button" onClick={() => setAiOpen((open) => !open)} aria-pressed={aiOpen} className="ml-2 rounded px-2 py-1 text-xs text-gray-500 hover:bg-gray-100 hover:text-gray-800">AI</button>}
+        {workspaceOpen && <button type="button" onClick={() => setAiOpen((open) => !open)} aria-pressed={aiOpen} className="ml-auto rounded px-2 py-1 text-xs text-gray-500 hover:bg-gray-100 hover:text-gray-800">AI</button>}
       </header>
       {closeError && <div role="alert" className="bg-amber-50 px-3 py-2 text-sm text-amber-800">종료하지 못했습니다: {closeError}</div>}
       {persistenceError && <div role="alert" className="bg-red-50 px-3 py-2 text-sm text-red-800">{persistenceError} · 현재 초안은 메모리에 유지됩니다. 앱을 닫기 전에 복사해 두세요.</div>}
