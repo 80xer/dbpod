@@ -436,7 +436,63 @@ type MetadataGetViewDefinitionResponse = string
 - 뷰: `CREATE OR REPLACE VIEW <schema>.<name> [WITH (<옵션>)] AS\n<정의>;`
 - materialized view: `CREATE MATERIALIZED VIEW <schema>.<name> AS\n<정의>\nWITH DATA;` (채워지지 않았으면 `WITH NO DATA;`)
 
-뷰의 `reloptions` 중 권한·행 필터링 의미를 바꾸는 `security_invoker`·`security_barrier`·`check_option`만 allowlist로 `WITH (...)`에 복원한다. 값은 영숫자 토큰만 허용한다. 그 외 옵션, materialized view 저장 옵션, tablespace, 인덱스, 권한, 코멘트는 포함하지 않는다. 뷰가 아니거나 없으면 오류를 반환한다. UI는 뷰 탭의 `Script` 모드에서 읽기 전용으로 표시하고 새로고침·재시도를 제공한다. 캐시 키가 연결 ID를 포함하므로 DB 전환 시 정리된다.
+뷰의 `reloptions` 중 권한·행 필터링 의미를 바꾸는 `security_invoker`·`security_barrier`·`check_option`만 allowlist로 `WITH (...)`에 복원한다. 값은 영숫자 토큰만 허용한다. 그 외 옵션, materialized view 저장 옵션, tablespace, 인덱스, 권한, 코멘트는 포함하지 않는다. 뷰가 아니거나 없으면 오류를 반환한다. UI는 뷰·materialized view 탭의 `Properties` 모드 `DDL` 항목에서 읽기 전용으로 표시하고 새로고침·재시도를 제공한다. 뷰 탭의 모드는 테이블과 같은 `Properties`·`Data` 두 가지다. 캐시 키가 연결 ID를 포함하므로 DB 전환 시 정리된다.
+
+### 8.5.1 `metadata_list_indexes`
+
+```ts
+// IPC 최상위 인자
+type MetadataListIndexesArgs = {
+  connectionId: string
+  relationOid: number
+}
+
+type MetadataListIndexesResponse = TableIndex[]
+
+type TableIndex = {
+  name: string
+  method: string          // pg_am.amname: btree, hash, gin, gist, brin, …
+  isPrimary: boolean
+  isUnique: boolean
+  isValid: boolean        // CONCURRENTLY 생성 중·실패면 false
+  predicate: string | null // 부분 인덱스 WHERE 식
+  columns: TableIndexColumn[] // 인덱스 순서: 키 컬럼 다음 INCLUDE 컬럼
+}
+
+type TableIndexColumn = {
+  name: string            // 컬럼명 또는 pg_get_indexdef가 출력한 식
+  isExpression: boolean
+  isKey: boolean          // INCLUDE 컬럼이면 false
+  descending: boolean | null // 정렬 없는 access method와 INCLUDE 컬럼은 null
+  nullsFirst: boolean | null
+  nullable: boolean | null   // 테이블 컬럼의 NULL 허용 여부, 식은 null
+}
+```
+
+현재 연결 DB의 `pg_index`에서 관계의 인덱스를 기본 키 먼저, 그다음 이름순으로 반환한다. 인덱스가 없는 관계(일반 뷰)는 빈 배열, 관계가 없으면 오류다. 고정 SQL에 OID만 바인딩한다.
+
+UI는 테이블·materialized view 탭의 `Properties` 모드 `Indexes` 항목에서 인덱스당 한 행으로 표시한다. 행의 `columns`는 키 컬럼을 쉼표로 잇고 INCLUDE 컬럼은 `INCLUDE (…)`로 붙인다. `nullable`은 키 컬럼 중 하나라도 NULL을 허용하면 `YES`, 식만 남아 알 수 없으면 `-`이다. `order`는 키 컬럼 정렬이 모두 같으면 하나만, 다르면 컬럼별로 쉼표로 잇고, `NULLS`는 방향 기본값과 다를 때만 표시한다. 행 앞의 `▸`를 누르면 그 아래에 컬럼당 한 행으로 컬럼별 nullable·order를 펼친다.
+
+### 8.5.2 `metadata_get_table_ddl`
+
+```ts
+// IPC 최상위 인자
+type MetadataGetTableDdlArgs = {
+  connectionId: string
+  relationOid: number
+}
+
+type MetadataGetTableDdlResponse = string
+```
+
+현재 연결 DB의 카탈로그에서 일반·파티션 테이블(`relkind` `r`·`p`)의 생성 스크립트를 재구성한다. 테이블이 아니거나 없으면 오류다. 이름은 서버 `quote_ident`, 코멘트는 서버 `quote_literal`로 인용한다.
+
+- `CREATE [UNLOGGED] TABLE <schema>.<name> (<컬럼>, <제약>)`: 컬럼은 타입, 타입 기본값과 다른 `COLLATE`, identity(`GENERATED … AS IDENTITY`), generated column, `DEFAULT`, `NOT NULL`. 제약은 `pg_get_constraintdef`의 PK·UNIQUE·EXCLUDE·FK·CHECK 순.
+- 상속 테이블은 자기 컬럼·제약만 쓰고 `INHERITS (…)`를 붙인다. 파티션은 `PARTITION OF <부모> [(<자기 제약>)] <bound>`로 쓰고 컬럼은 부모에서 받는다. 부모에서 복제된 제약·인덱스는 제외한다.
+- 파티션 테이블은 `PARTITION BY <pg_get_partkeydef>`. 자체 인덱스의 `ON ONLY`는 이후 만드는 파티션에도 적용되도록 `ON`으로 바꾼다.
+- 제약이 소유하지 않은 인덱스는 `pg_get_indexdef`로 이름순, 이어서 테이블·컬럼 `COMMENT ON`.
+
+소유 시퀀스, identity 시퀀스 옵션, storage·tablespace·owner·권한·트리거·RLS 정책, 하위 파티션은 포함하지 않는다. UI는 테이블 탭 `Properties` 모드의 `DDL` 항목에서 읽기 전용으로 표시하고 새로고침·재시도를 제공한다. 같은 항목이 뷰에서는 `metadata_get_view_definition`을 쓴다. 두 조회 모두 캐시 키가 연결 ID를 포함하므로 DB 전환 시 정리된다.
 
 ### 8.6 `metadata_list_sql_words`
 
@@ -720,7 +776,7 @@ Permission: `dbpod:history-write`
 
 | 항목 | 제한 |
 | --- | --- |
-| SQL text | 1MiB |
+| SQL text | 64MiB (UTF-8 byte 기준. 한 문장짜리 대량 multi-row INSERT 허용) |
 | Query row count | 고정 제한 없음 (메모리 예산 적용) |
 | Query timeout | 1시간 |
 | query result page rows | 200 |

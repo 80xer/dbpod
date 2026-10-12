@@ -13,7 +13,8 @@ use crate::infrastructure::postgres::session_actor::{
 };
 use crate::state::AppState;
 
-const MAX_SQL_BYTES: usize = 1024 * 1024;
+/// Room for a bulk load pasted as one multi-row INSERT; PostgreSQL itself allows ~1 GiB.
+const MAX_SQL_BYTES: usize = 64 * 1024 * 1024;
 const MAX_SESSIONS_PER_CONNECTION: usize = 8;
 
 /// Idempotent per queryTabId: returns the existing session if one is open.
@@ -133,7 +134,10 @@ pub fn execute_with_paging(
         return Err(AppError::invalid_request("sql is empty"));
     }
     if req.sql.len() > MAX_SQL_BYTES {
-        return Err(AppError::invalid_request("sql exceeds 1 MiB"));
+        return Err(AppError::invalid_request(format!(
+            "SQL이 너무 큽니다 ({:.1}MiB). 한 번에 최대 64MiB까지 실행할 수 있습니다.",
+            req.sql.len() as f64 / (1024.0 * 1024.0)
+        )));
     }
     // Paged queries use retained-byte budgets, not the legacy profile row cap.
     if !paged && (req.max_rows == 0 || req.max_rows > 10_000) {

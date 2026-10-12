@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { SqlEditor } from "../query-editor/SqlEditor";
 
 /**
- * Read-only catalog SQL (routine or view definition). The query key must start
+ * Read-only catalog SQL (routine definition, view or table DDL). The query key must start
  * with a kind and the connection id so a database switch drops it.
  */
 export function DefinitionView({ title, queryKey, load }: {

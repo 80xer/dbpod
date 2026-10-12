@@ -123,6 +123,37 @@ pub struct TableMetadata {
     pub row_level_security: bool,
 }
 
+/// One column of an index, in index order: key columns, then INCLUDE columns.
+#[derive(Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct TableIndexColumn {
+    /// Column name, or the indexed expression as `pg_get_indexdef` prints it.
+    pub name: String,
+    pub is_expression: bool,
+    /// false for INCLUDE columns, which are stored but not searched or ordered.
+    pub is_key: bool,
+    /// `null` where the access method has no ordering (hash, GIN, …) and for INCLUDE columns.
+    pub descending: Option<bool>,
+    pub nulls_first: Option<bool>,
+    /// The table column's nullability; `null` for expressions.
+    pub nullable: Option<bool>,
+}
+
+#[derive(Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct TableIndex {
+    pub name: String,
+    /// Access method name: btree, hash, gin, gist, brin, …
+    pub method: String,
+    pub is_primary: bool,
+    pub is_unique: bool,
+    /// false while a concurrent build has not finished or after it failed.
+    pub is_valid: bool,
+    /// Partial-index WHERE clause.
+    pub predicate: Option<String>,
+    pub columns: Vec<TableIndexColumn>,
+}
+
 #[derive(Debug, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct TableDataExecuteRequest {

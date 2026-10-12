@@ -144,6 +144,38 @@ kind: string, columns: Array<TableColumnMetadata>,
  */
 primaryKey: Array<number>, uniqueKeys: Array<Array<number>>, rowLevelSecurity: boolean, };
 
+export type TableIndexColumn = { 
+/**
+ * Column name, or the indexed expression as `pg_get_indexdef` prints it.
+ */
+name: string, isExpression: boolean, 
+/**
+ * false for INCLUDE columns, which are stored but not searched or ordered.
+ */
+isKey: boolean, 
+/**
+ * `null` where the access method has no ordering (hash, GIN, …) and for INCLUDE columns.
+ */
+descending: boolean | null, nullsFirst: boolean | null, 
+/**
+ * The table column's nullability; `null` for expressions.
+ */
+nullable: boolean | null, };
+
+export type TableIndex = { name: string, 
+/**
+ * Access method name: btree, hash, gin, gist, brin, …
+ */
+method: string, isPrimary: boolean, isUnique: boolean, 
+/**
+ * false while a concurrent build has not finished or after it failed.
+ */
+isValid: boolean, 
+/**
+ * Partial-index WHERE clause.
+ */
+predicate: string | null, columns: Array<TableIndexColumn>, };
+
 export type TableDataExecuteRequest = { connectionId: string, queryTabId: string, resultTabId: string, relationOid: number, 
 /**
  * attribute number to sort by (validated against the catalog)

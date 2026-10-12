@@ -17,7 +17,7 @@
 | 타입 | 정수·numeric 문자열, temporal 전체 범위·infinity·24:00, empty/unbounded range 구분, binary handle, 미지원 타입 명시 |
 | 메모리 | 24GB 데스크톱 기준 결과 512MiB / 연결 1GiB / 앱 2GiB. 보존량은 원본 × 4 + 컬럼당 256바이트로 추정하고 IPC는 실제 직렬화 크기로 계산. 1MiB 초과 인라인 행은 잘라 표시하지 않고 결과를 truncate |
 | 그리드 | 가상화, 범위 선택, 방향키·Home/End·Enter/F2·Escape, TSV 복사·붙여넣기, CSV/JSON 내보내기 |
-| Table Data | 탭별 정렬 복원, 정렬에 PK tie-breaker, 스크롤 시 200행씩 이어서 조회, 검증된 xmin으로 편집 |
+| Table Data | 탭별 정렬 복원, 정렬에 PK tie-breaker, 스크롤 시 200행씩 이어서 조회, 검증된 xmin으로 편집. `Properties` 모드에 Columns·Indexes(인덱스별 행, 컬럼 펼치기, 일반 뷰 제외)·DDL(테이블 재구성 스크립트, 뷰 정의) |
 | 편집 | 보수적 단일 테이블 판정, UPDATE·DELETE 충돌 검사, preview 만료·소유권·용량 제한, 트랜잭션 저장, 저장 중 편집 고정 |
 | 충돌 | 서버 값·새 xmin 갱신, 삭제된 행 제거와 나머지 편집 좌표 동시 재배치 |
 | 저장 | AES-256-GCM 스냅샷, OS Keychain 키, 평문 스냅샷 마이그레이션, 손상 파일 덮어쓰기 차단, 저장 오류 표시 |
@@ -39,7 +39,7 @@
 
 - Windows/Linux 및 모바일 빌드·실기기 검증, 모바일 background privacy, 반응형·스크린리더 수용 검사.
 - 사용자 CA import, 앱 잠금, Keychain 부재 시 암호화 vault 폴백.
-- 열 리사이즈·고정·클라이언트 정렬, Structure Tab, 인덱스·트리거 UI, 디자인 토큰·테마·국제화.
+- 열 리사이즈·고정·클라이언트 정렬, Structure Tab 편집, 트리거 UI, 디자인 토큰·테마·국제화.
 - 미지원 배열·확장 타입의 완전한 디코딩, 큰 text 지연 조회, PostgreSQL Notice 전달.
 - SQLx가 서버 transaction status를 공개하지 않아 상태 표시는 명령 상태 머신이다. 성공·실패 판정 자체는 DB 스트림 완료를 기다린다.
 - 같은 데이터 디렉터리를 여러 앱 프로세스가 공유하는 실행은 지원하지 않는다. 현재 저장 직렬화는 프로세스 안에서 보장한다.

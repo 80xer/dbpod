@@ -80,14 +80,17 @@ export function SettingsPage() {
       <section aria-labelledby="appearance-heading" className="rounded-lg border border-gray-200 bg-white p-5">
         <h3 id="appearance-heading" className="mb-4 font-semibold">화면</h3>
         <div className="grid gap-5 sm:grid-cols-2">
-          <label className="text-sm">
-            <span className="font-medium">테마</span>
-            <select aria-label="테마" value={settings.theme} onChange={(event) => setAppSettings({ theme: event.target.value as AppTheme })} className={selectClass}>
-              <option value="system">시스템 설정</option>
-              <option value="light">밝게</option>
-              <option value="dark">어둡게</option>
-            </select>
-          </label>
+          <fieldset className="text-sm sm:col-span-2">
+            <legend className="font-medium">테마</legend>
+            <div className="mt-1 inline-flex rounded border border-gray-300 p-0.5">
+              {([["system", "시스템 설정"], ["light", "밝게"], ["dark", "어둡게"]] as const).map(([value, label]) => (
+                <label key={value} className={`cursor-pointer rounded px-3 py-1.5 has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-blue-500 ${settings.theme === value ? "bg-blue-50 font-medium text-blue-700" : "text-gray-600 hover:bg-gray-100"}`}>
+                  <input type="radio" name="theme" value={value} checked={settings.theme === value} onChange={() => setAppSettings({ theme: value as AppTheme })} className="sr-only" />
+                  {label}
+                </label>
+              ))}
+            </div>
+          </fieldset>
 
           <label className="text-sm">
             <span className="font-medium">폰트</span>

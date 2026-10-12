@@ -510,6 +510,263 @@ pub async fn get_view_definition(
     .await
 }
 
+/// Indexes of a relation, primary key first and then by name, each with its columns
+/// in index order. A relation without indexes (a plain view) yields an empty list.
+pub async fn list_indexes(
+    state: &AppState,
+    connection_id: &str,
+    relation_oid: u32,
+) -> Result<Vec<TableIndex>, AppError> {
+    with_control(state, connection_id, move |conn| {
+        Box::pin(async move {
+            let oid = i64::from(relation_oid);
+            let exists: bool =
+                sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM pg_class WHERE oid::int8 = $1)")
+                    .bind(oid)
+                    .fetch_one(&mut *conn)
+                    .await
+                    .map_err(|e| AppError::from_sqlx(&e))?;
+            if !exists {
+                return Err(AppError::invalid_request("unknown relation"));
+            }
+            let rows = sqlx::query(
+                "SELECT i.indexrelid, ic.relname, am.amname, i.indisprimary, i.indisunique, \
+                        i.indisvalid, pg_get_expr(i.indpred, i.indrelid), k.n <= i.indnkeyatts, \
+                        a.attname, pg_get_indexdef(i.indexrelid, k.n::int, false), NOT a.attnotnull, \
+                        CASE WHEN pg_index_column_has_property(i.indexrelid, k.n::int, 'orderable') \
+                             THEN pg_index_column_has_property(i.indexrelid, k.n::int, 'desc') END, \
+                        CASE WHEN pg_index_column_has_property(i.indexrelid, k.n::int, 'orderable') \
+                             THEN pg_index_column_has_property(i.indexrelid, k.n::int, 'nulls_first') END \
+                 FROM pg_index i \
+                 JOIN pg_class ic ON ic.oid = i.indexrelid \
+                 JOIN pg_am am ON am.oid = ic.relam \
+                 CROSS JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS k(attnum, n) \
+                 LEFT JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum \
+                 WHERE i.indrelid::int8 = $1 \
+                 ORDER BY i.indisprimary DESC, ic.relname, i.indexrelid, k.n",
+            )
+            .bind(oid)
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|e| AppError::from_sqlx(&e))?;
+
+            let mut indexes: Vec<TableIndex> = Vec::new();
+            let mut current: Option<u32> = None;
+            for r in rows {
+                let index_oid = r.get::<Oid, _>(0).0;
+                if current != Some(index_oid) {
+                    current = Some(index_oid);
+                    indexes.push(TableIndex {
+                        name: r.get(1),
+                        method: r.get(2),
+                        is_primary: r.get(3),
+                        is_unique: r.get(4),
+                        is_valid: r.get(5),
+                        predicate: r.get(6),
+                        columns: Vec::new(),
+                    });
+                }
+                let is_key: bool = r.get(7);
+                let attname: Option<String> = r.get(8);
+                let column = TableIndexColumn {
+                    is_expression: attname.is_none(),
+                    name: attname.unwrap_or_else(|| r.get(9)),
+                    is_key,
+                    descending: if is_key { r.get(11) } else { None },
+                    nulls_first: if is_key { r.get(12) } else { None },
+                    nullable: r.get(10),
+                };
+                if let Some(index) = indexes.last_mut() {
+                    index.columns.push(column);
+                }
+            }
+            Ok(indexes)
+        })
+    })
+    .await
+}
+
+/// Rebuilds a table's creation script from the catalog: columns, constraints,
+/// indexes no constraint owns, inheritance, partitioning and comments. Names and
+/// comment literals are quoted server-side because the script is meant to be run.
+/// Owned sequences, identity options, storage, tablespace, owner, privileges,
+/// triggers, policies and partitions of a partitioned table are not included.
+pub async fn get_table_ddl(
+    state: &AppState,
+    connection_id: &str,
+    relation_oid: u32,
+) -> Result<String, AppError> {
+    with_control(state, connection_id, move |conn| {
+        Box::pin(async move {
+            let oid = i64::from(relation_oid);
+            let info = sqlx::query(
+                "SELECT quote_ident(n.nspname) || '.' || quote_ident(c.relname), \
+                        c.relpersistence = 'u', c.relispartition, \
+                        CASE WHEN c.relkind = 'p' THEN pg_get_partkeydef(c.oid) END, \
+                        pg_get_expr(c.relpartbound, c.oid), \
+                        quote_literal(obj_description(c.oid, 'pg_class')), \
+                        (SELECT string_agg(quote_ident(pn.nspname) || '.' || quote_ident(p.relname), \
+                                           ', ' ORDER BY h.inhseqno) \
+                         FROM pg_inherits h JOIN pg_class p ON p.oid = h.inhparent \
+                         JOIN pg_namespace pn ON pn.oid = p.relnamespace \
+                         WHERE h.inhrelid = c.oid) \
+                 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
+                 WHERE c.oid::int8 = $1 AND c.relkind IN ('r', 'p')",
+            )
+            .bind(oid)
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(|e| AppError::from_sqlx(&e))?
+            .ok_or_else(|| AppError::invalid_request("table no longer exists"))?;
+            let name: String = info.get(0);
+            let is_partition: bool = info.get(2);
+            let partition_key: Option<String> = info.get(3);
+            let bound: Option<String> = info.get(4);
+            let table_comment: Option<String> = info.get(5);
+            let parents: Option<String> = info.get(6);
+
+            let columns = sqlx::query(
+                "SELECT quote_ident(a.attname), format_type(a.atttypid, a.atttypmod), \
+                        a.attnotnull, a.attidentity::text, a.attgenerated::text, \
+                        pg_get_expr(d.adbin, d.adrelid), \
+                        CASE WHEN a.attcollation <> t.typcollation \
+                             THEN quote_ident(cn.nspname) || '.' || quote_ident(co.collname) END, \
+                        quote_literal(col_description(a.attrelid, a.attnum)), a.attislocal \
+                 FROM pg_attribute a \
+                 JOIN pg_type t ON t.oid = a.atttypid \
+                 LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum \
+                 LEFT JOIN pg_collation co ON co.oid = a.attcollation \
+                 LEFT JOIN pg_namespace cn ON cn.oid = co.collnamespace \
+                 WHERE a.attrelid::int8 = $1 AND a.attnum > 0 AND NOT a.attisdropped \
+                 ORDER BY a.attnum",
+            )
+            .bind(oid)
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|e| AppError::from_sqlx(&e))?;
+            // Cloned partition constraints and inherited ones come with the parent.
+            let constraints = sqlx::query(
+                "SELECT quote_ident(conname), pg_get_constraintdef(oid) FROM pg_constraint \
+                 WHERE conrelid::int8 = $1 AND contype IN ('p', 'u', 'x', 'f', 'c') \
+                   AND conislocal AND conparentid = 0 \
+                 ORDER BY CASE contype WHEN 'p' THEN 0 WHEN 'u' THEN 1 WHEN 'x' THEN 2 \
+                          WHEN 'f' THEN 3 ELSE 4 END, conname",
+            )
+            .bind(oid)
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|e| AppError::from_sqlx(&e))?;
+            // Constraint-owned indexes are created by their constraint; attached
+            // partition indexes by the parent's index.
+            let indexes: Vec<String> = sqlx::query_scalar(
+                "SELECT pg_get_indexdef(i.indexrelid) FROM pg_index i \
+                 JOIN pg_class ic ON ic.oid = i.indexrelid \
+                 WHERE i.indrelid::int8 = $1 AND NOT ic.relispartition \
+                   AND NOT EXISTS (SELECT 1 FROM pg_constraint c \
+                                   WHERE c.conindid = i.indexrelid AND c.conrelid = i.indrelid \
+                                     AND c.contype IN ('p', 'u', 'x')) \
+                 ORDER BY ic.relname",
+            )
+            .bind(oid)
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|e| AppError::from_sqlx(&e))?;
+
+            let mut body: Vec<String> = Vec::new();
+            let mut comments: Vec<String> = Vec::new();
+            if let Some(comment) = table_comment {
+                comments.push(format!("COMMENT ON TABLE {name} IS {comment};"));
+            }
+            for c in &columns {
+                let column: String = c.get(0);
+                if let Some(comment) = c.get::<Option<String>, _>(7) {
+                    comments.push(format!("COMMENT ON COLUMN {name}.{column} IS {comment};"));
+                }
+                // A partition's columns all come from its parent.
+                if is_partition || !c.get::<bool, _>(8) {
+                    continue;
+                }
+                let mut def = format!("{column} {}", c.get::<String, _>(1));
+                if let Some(collation) = c.get::<Option<String>, _>(6) {
+                    def.push_str(&format!(" COLLATE {collation}"));
+                }
+                let expr: Option<String> = c.get(5);
+                match (
+                    c.get::<String, _>(3).as_str(),
+                    c.get::<String, _>(4).as_str(),
+                    expr,
+                ) {
+                    ("a", _, _) => def.push_str(" GENERATED ALWAYS AS IDENTITY"),
+                    ("d", _, _) => def.push_str(" GENERATED BY DEFAULT AS IDENTITY"),
+                    (_, "s", Some(expr)) => {
+                        def.push_str(&format!(" GENERATED ALWAYS AS ({expr}) STORED"))
+                    }
+                    (_, "v", Some(expr)) => {
+                        def.push_str(&format!(" GENERATED ALWAYS AS ({expr}) VIRTUAL"))
+                    }
+                    (_, _, Some(expr)) => def.push_str(&format!(" DEFAULT {expr}")),
+                    _ => {}
+                }
+                if c.get(2) {
+                    def.push_str(" NOT NULL");
+                }
+                body.push(def);
+            }
+            for c in &constraints {
+                body.push(format!(
+                    "CONSTRAINT {} {}",
+                    c.get::<String, _>(0),
+                    c.get::<String, _>(1)
+                ));
+            }
+            let body = if body.is_empty() {
+                String::new()
+            } else {
+                format!("(\n    {}\n)", body.join(",\n    "))
+            };
+
+            let unlogged = if info.get(1) { "UNLOGGED " } else { "" };
+            let mut script = format!("CREATE {unlogged}TABLE {name}");
+            match (is_partition, &parents) {
+                (true, Some(parent)) => {
+                    script.push_str(&format!(" PARTITION OF {parent}"));
+                    if !body.is_empty() {
+                        script.push_str(&format!(" {body}"));
+                    }
+                    script.push_str(&format!("\n{}", bound.unwrap_or_default()));
+                }
+                _ => {
+                    script.push_str(if body.is_empty() { " ()" } else { " " });
+                    script.push_str(&body);
+                    if let Some(parents) = &parents {
+                        script.push_str(&format!("\nINHERITS ({parents})"));
+                    }
+                }
+            }
+            if let Some(key) = partition_key {
+                script.push_str(&format!("\nPARTITION BY {key}"));
+            }
+            script.push(';');
+
+            if !indexes.is_empty() {
+                script.push('\n');
+            }
+            // A partitioned table's own indexes print as `ON ONLY`, which would not
+            // cascade to partitions created afterwards.
+            let only = format!(" ON ONLY {name} USING ");
+            let cascading = format!(" ON {name} USING ");
+            for index in indexes {
+                script.push_str(&format!("\n{};", index.replacen(&only, &cascading, 1)));
+            }
+            if !comments.is_empty() {
+                script.push_str(&format!("\n\n{}", comments.join("\n")));
+            }
+            Ok(script)
+        })
+    })
+    .await
+}
+
 pub async fn get_table(
     state: &AppState,
     req: &MetadataGetTableRequest,

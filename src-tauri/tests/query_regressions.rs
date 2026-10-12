@@ -289,6 +289,256 @@ async fn view_scripts_quote_catalog_names_and_recreate_the_same_view() {
 }
 
 #[tokio::test]
+async fn lists_indexes_with_columns_in_index_order() {
+    use dbpod_lib::application::metadata_service;
+    use serde_json::json;
+    use sqlx::Connection;
+
+    let (_node, state) = setup().await;
+    let opts = state.workspaces.lock().unwrap()[CONN_ID]
+        .connect_opts
+        .clone();
+    let mut admin = sqlx::PgConnection::connect_with(&opts).await.unwrap();
+    sqlx::raw_sql(
+        "CREATE TABLE ix(id int PRIMARY KEY, a text NOT NULL, b int, c int, \
+                         CONSTRAINT ix_ab UNIQUE (a, b)); \
+         CREATE INDEX ix_desc ON ix (b DESC NULLS LAST, c) INCLUDE (a); \
+         CREATE INDEX ix_expr ON ix (lower(a)) WHERE b > 0; \
+         CREATE INDEX ix_hash ON ix USING hash (c); \
+         CREATE VIEW ix_view AS SELECT 1 AS one",
+    )
+    .execute(&mut admin)
+    .await
+    .unwrap();
+    let oid_of = |name: &'static str| {
+        sqlx::query_scalar::<_, i64>("SELECT to_regclass($1)::oid::int8").bind(name)
+    };
+    let table = oid_of("ix").fetch_one(&mut admin).await.unwrap();
+    let indexes = metadata_service::list_indexes(&state, CONN_ID, table as u32)
+        .await
+        .unwrap();
+    let col = |name: &str,
+               expr: bool,
+               key: bool,
+               desc: Option<bool>,
+               nf: Option<bool>,
+               nullable: Option<bool>| {
+        json!({ "name": name, "isExpression": expr, "isKey": key, "descending": desc, "nullsFirst": nf, "nullable": nullable })
+    };
+    let index = |name: &str,
+                 method: &str,
+                 pk: bool,
+                 unique: bool,
+                 predicate: Option<&str>,
+                 columns: Vec<serde_json::Value>| {
+        json!({ "name": name, "method": method, "isPrimary": pk, "isUnique": unique, "isValid": true, "predicate": predicate, "columns": columns })
+    };
+    let asc = (Some(false), Some(false));
+    assert_eq!(
+        serde_json::to_value(&indexes).unwrap(),
+        json!([
+            index(
+                "ix_pkey",
+                "btree",
+                true,
+                true,
+                None,
+                vec![col("id", false, true, asc.0, asc.1, Some(false))]
+            ),
+            index(
+                "ix_ab",
+                "btree",
+                false,
+                true,
+                None,
+                vec![
+                    col("a", false, true, asc.0, asc.1, Some(false)),
+                    col("b", false, true, asc.0, asc.1, Some(true)),
+                ]
+            ),
+            index(
+                "ix_desc",
+                "btree",
+                false,
+                false,
+                None,
+                vec![
+                    col("b", false, true, Some(true), Some(false), Some(true)),
+                    col("c", false, true, asc.0, asc.1, Some(true)),
+                    col("a", false, false, None, None, Some(false)),
+                ]
+            ),
+            index(
+                "ix_expr",
+                "btree",
+                false,
+                false,
+                Some("(b > 0)"),
+                vec![col("lower(a)", true, true, asc.0, asc.1, None)]
+            ),
+            index(
+                "ix_hash",
+                "hash",
+                false,
+                false,
+                None,
+                vec![col("c", false, true, None, None, Some(true))]
+            ),
+        ])
+    );
+
+    let view = oid_of("ix_view").fetch_one(&mut admin).await.unwrap();
+    assert!(metadata_service::list_indexes(&state, CONN_ID, view as u32)
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(metadata_service::list_indexes(&state, CONN_ID, 0)
+        .await
+        .is_err());
+}
+
+#[tokio::test]
+async fn table_ddl_replays_to_the_same_tables() {
+    use dbpod_lib::application::metadata_service;
+    use sqlx::Connection;
+
+    let (_node, state) = setup().await;
+    let opts = state.workspaces.lock().unwrap()[CONN_ID]
+        .connect_opts
+        .clone();
+    let mut admin = sqlx::PgConnection::connect_with(&opts).await.unwrap();
+    let schema = "CREATE SCHEMA \"Odd; Schema\"";
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+        "{schema}; \
+         CREATE TABLE \"Odd; Schema\".ref(id int PRIMARY KEY); \
+         CREATE TABLE \"Odd; Schema\".\"T \"\"x\"\"\" ( \
+           id int GENERATED ALWAYS AS IDENTITY PRIMARY KEY, \
+           \"Name\" text COLLATE \"C\" NOT NULL DEFAULT 'a''b', \
+           ref_id int REFERENCES \"Odd; Schema\".ref(id) ON DELETE CASCADE, \
+           qty int CHECK (qty > 0), \
+           doubled int GENERATED ALWAYS AS (qty * 2) STORED, \
+           span int4range, \
+           UNIQUE (\"Name\", ref_id), \
+           EXCLUDE USING gist (span WITH &&)); \
+         CREATE INDEX \"lower name\" ON \"Odd; Schema\".\"T \"\"x\"\"\" (lower(\"Name\")) WHERE qty > 1; \
+         COMMENT ON TABLE \"Odd; Schema\".\"T \"\"x\"\"\" IS 'it''s a \\ table'; \
+         COMMENT ON COLUMN \"Odd; Schema\".\"T \"\"x\"\"\".\"Name\" IS 'the name'; \
+         CREATE UNLOGGED TABLE \"Odd; Schema\".scratch(n int); \
+         CREATE TABLE \"Odd; Schema\".parent(id int, at date NOT NULL) PARTITION BY RANGE (at); \
+         CREATE INDEX parent_at ON \"Odd; Schema\".parent (at); \
+         CREATE TABLE \"Odd; Schema\".p2026 PARTITION OF \"Odd; Schema\".parent \
+           (CONSTRAINT positive CHECK (id > 0)) FOR VALUES FROM ('2026-01-01') TO ('2027-01-01'); \
+         CREATE TABLE \"Odd; Schema\".base(id int); \
+         CREATE TABLE \"Odd; Schema\".child(extra int) INHERITS (\"Odd; Schema\".base)"
+    )))
+    .execute(&mut admin)
+    .await
+    .unwrap();
+    // Creation order: each script may depend only on the ones before it.
+    let tables = [
+        r#""Odd; Schema".ref"#,
+        r#""Odd; Schema"."T ""x""""#,
+        r#""Odd; Schema".scratch"#,
+        r#""Odd; Schema".parent"#,
+        r#""Odd; Schema".p2026"#,
+        r#""Odd; Schema".base"#,
+        r#""Odd; Schema".child"#,
+    ];
+    let oid_of = |name: &'static str| {
+        sqlx::query_scalar::<_, i64>("SELECT to_regclass($1)::oid::int8").bind(name)
+    };
+    let mut scripts = Vec::new();
+    for name in tables {
+        let oid = oid_of(name).fetch_one(&mut admin).await.unwrap();
+        scripts.push(
+            metadata_service::get_table_ddl(&state, CONN_ID, oid as u32)
+                .await
+                .unwrap(),
+        );
+    }
+    assert_eq!(
+        scripts[1],
+        r#"CREATE TABLE "Odd; Schema"."T ""x""" (
+    id integer GENERATED ALWAYS AS IDENTITY NOT NULL,
+    "Name" text COLLATE pg_catalog."C" DEFAULT 'a''b'::text NOT NULL,
+    ref_id integer,
+    qty integer,
+    doubled integer GENERATED ALWAYS AS ((qty * 2)) STORED,
+    span int4range,
+    CONSTRAINT "T ""x""_pkey" PRIMARY KEY (id),
+    CONSTRAINT "T ""x""_Name_ref_id_key" UNIQUE ("Name", ref_id),
+    CONSTRAINT "T ""x""_span_excl" EXCLUDE USING gist (span WITH &&),
+    CONSTRAINT "T ""x""_ref_id_fkey" FOREIGN KEY (ref_id) REFERENCES "Odd; Schema".ref(id) ON DELETE CASCADE,
+    CONSTRAINT "T ""x""_qty_check" CHECK ((qty > 0))
+);
+
+CREATE INDEX "lower name" ON "Odd; Schema"."T ""x""" USING btree (lower("Name")) WHERE (qty > 1);
+
+COMMENT ON TABLE "Odd; Schema"."T ""x""" IS E'it''s a \\ table';
+COMMENT ON COLUMN "Odd; Schema"."T ""x"""."Name" IS 'the name';"#
+    );
+    assert!(
+        scripts[2].starts_with("CREATE UNLOGGED TABLE"),
+        "{}",
+        scripts[2]
+    );
+    assert_eq!(
+        scripts[4],
+        "CREATE TABLE \"Odd; Schema\".p2026 PARTITION OF \"Odd; Schema\".parent (\n    \
+         CONSTRAINT positive CHECK ((id > 0))\n)\nFOR VALUES FROM ('2026-01-01') TO ('2027-01-01');"
+    );
+    assert!(!scripts[3].contains("ON ONLY"), "{}", scripts[3]);
+    assert_eq!(
+        scripts[6],
+        "CREATE TABLE \"Odd; Schema\".child (\n    extra integer\n)\nINHERITS (\"Odd; Schema\".base);"
+    );
+
+    // The scripts are the tables: replaying them into an empty schema yields the same DDL.
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+        "DROP SCHEMA \"Odd; Schema\" CASCADE; {schema}; {}",
+        scripts.join("\n")
+    )))
+    .execute(&mut admin)
+    .await
+    .unwrap();
+    for (name, script) in tables.into_iter().zip(&scripts) {
+        let oid = oid_of(name).fetch_one(&mut admin).await.unwrap();
+        assert_eq!(
+            &metadata_service::get_table_ddl(&state, CONN_ID, oid as u32)
+                .await
+                .unwrap(),
+            script
+        );
+    }
+    // The partition picked up the parent's index without the parent being ONLY.
+    assert!(sqlx::query_scalar::<_, bool>(
+        "SELECT bool_and(i.indisvalid) FROM pg_index i \
+         WHERE i.indrelid IN ('\"Odd; Schema\".parent'::regclass, '\"Odd; Schema\".p2026'::regclass) \
+           AND NOT i.indisprimary"
+    )
+    .fetch_one(&mut admin)
+    .await
+    .unwrap());
+
+    sqlx::raw_sql("CREATE VIEW \"Odd; Schema\".v AS SELECT 1 AS one")
+        .execute(&mut admin)
+        .await
+        .unwrap();
+    let view = oid_of(r#""Odd; Schema".v"#)
+        .fetch_one(&mut admin)
+        .await
+        .unwrap();
+    assert!(
+        metadata_service::get_table_ddl(&state, CONN_ID, view as u32)
+            .await
+            .is_err()
+    );
+    assert!(metadata_service::get_table_ddl(&state, CONN_ID, 0)
+        .await
+        .is_err());
+}
+
+#[tokio::test]
 async fn completion_words_come_from_the_server_and_leave_out_internal_functions() {
     use dbpod_lib::application::metadata_service;
     use sqlx::Connection;

@@ -11,7 +11,7 @@ import {
   type TableDataView as ViewState,
 } from "../../entities/workspace/workspaceStore";
 import { ipc } from "../../shared/ipc/invoke";
-import { DefinitionView } from "./DefinitionView";
+import { TablePropertiesView, type PropertySection } from "./TablePropertiesView";
 import { runTableData } from "../../shared/ipc/queryChannel";
 import { ResultGrid } from "../result-grid/ResultGrid";
 import { confirmDialog } from "../../shared/ui/prompt";
@@ -38,6 +38,7 @@ export function TableDataView({ connectionId, tab, readOnly, focused, onModeChan
     () => resultStore.getSnapshot(resultTabId),
   );
   const running = snapshot.status === "running";
+  const [propertySection, setPropertySection] = useState<PropertySection>("columns");
 
   const meta = useQuery({
     queryKey: ["table", connectionId, target?.relationOid],
@@ -101,10 +102,8 @@ export function TableDataView({ connectionId, tab, readOnly, focused, onModeChan
     void fetchPage(next);
   };
 
-  const isView = meta.data?.kind === "view" || meta.data?.kind === "materialized-view";
-  const modes = ([["properties", "Properties"], ["data", "Data"], ["script", "Script"]] as const)
-    .filter(([mode]) => mode !== "script" || isView);
-  const dataMode: TableDataMode = tab.tableDataMode === "properties" || (tab.tableDataMode === "script" && isView) ? tab.tableDataMode : "data";
+  const modes = [["properties", "Properties"], ["data", "Data"]] as const;
+  const dataMode: TableDataMode = tab.tableDataMode === "properties" ? "properties" : "data";
 
   return (
       <div data-result-area="" className="flex h-full min-h-0 flex-col">
@@ -134,51 +133,9 @@ export function TableDataView({ connectionId, tab, readOnly, focused, onModeChan
           </div>
         </div>
       </div>
-      {dataMode === "script" ? (
-        <DefinitionView title={`${target.schema}.${target.name}`} queryKey={["view-definition", connectionId, target.relationOid]}
-          load={() => ipc.metadataGetViewDefinition({ connectionId, relationOid: target.relationOid })} />
-      ) : dataMode === "properties" ? (
-        <div className="min-h-0 flex-1">
-          <div className="flex h-full min-h-0">
-            <aside className="w-32 shrink-0 border-r border-gray-200 bg-gray-50 p-2 text-xs">
-              <button type="button" className="w-full rounded bg-white px-2 py-1 text-left">
-                Columns
-              </button>
-            </aside>
-            <section className="min-h-0 flex-1 overflow-auto">
-              <table className="min-w-full table-auto border-separate border-spacing-0 text-xs">
-                <thead className="sticky top-0 bg-gray-50">
-                  <tr>
-                    <th className="border-b border-gray-200 px-2 py-1 text-left font-medium text-gray-600">#</th>
-                    <th className="border-b border-gray-200 px-2 py-1 text-left font-medium text-gray-600">column name</th>
-                    <th className="border-b border-gray-200 px-2 py-1 text-left font-medium text-gray-600">data type</th>
-                    <th className="border-b border-gray-200 px-2 py-1 text-left font-medium text-gray-600">not null</th>
-                    <th className="border-b border-gray-200 px-2 py-1 text-left font-medium text-gray-600">default</th>
-                    <th className="border-b border-gray-200 px-2 py-1 text-left font-medium text-gray-600">comment</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {meta.data?.columns.map((column) => (
-                    <tr key={column.attributeNumber}>
-                    <td className="border-b border-gray-100 px-2 py-1">{column.attributeNumber}</td>
-                    <td className="border-b border-gray-100 px-2 py-1">{column.name}</td>
-                    <td className="border-b border-gray-100 px-2 py-1">{column.pgTypeName}</td>
-                    <td className="border-b border-gray-100 px-2 py-1">{column.nullable ? "YES" : "NO"}</td>
-                    <td className="border-b border-gray-100 px-2 py-1">{column.defaultExpr ?? "-"}</td>
-                    <td className="border-b border-gray-100 px-2 py-1">{column.comment ?? "-"}</td>
-                  </tr>
-                ))}
-                  {!meta.data && (
-                    <tr><td className="px-2 py-1 text-gray-500" colSpan={6}>컬럼 정보를 불러오는 중…</td></tr>
-                  )}
-                  {meta.data?.columns.length === 0 && (
-                    <tr><td className="px-2 py-1 text-gray-500" colSpan={6}>컬럼 정보가 없습니다.</td></tr>
-                  )}
-                </tbody>
-              </table>
-            </section>
-          </div>
-        </div>
+      {dataMode === "properties" ? (
+        <TablePropertiesView connectionId={connectionId} target={target} meta={meta.data}
+          section={propertySection} onSectionChange={setPropertySection} />
       ) : (
         <>
           {editability && (

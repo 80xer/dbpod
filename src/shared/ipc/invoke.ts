@@ -38,6 +38,7 @@ import type {
   TableDataExecuteRequest,
   TableDataFetchPageRequest,
   TableMetadata,
+  TableIndex,
   AiChatEvent,
   AiChatRequest,
   VaultStatus,
@@ -96,6 +97,10 @@ export const ipc = {
     invoke<string>("metadata_get_routine_definition", args),
   metadataGetViewDefinition: (args: { connectionId: string; relationOid: number }) =>
     invoke<string>("metadata_get_view_definition", args),
+  metadataListIndexes: (args: { connectionId: string; relationOid: number }) =>
+    invoke<TableIndex[]>("metadata_list_indexes", args),
+  metadataGetTableDdl: (args: { connectionId: string; relationOid: number }) =>
+    invoke<string>("metadata_get_table_ddl", args),
   metadataListSqlWords: (args: { connectionId: string }) =>
     invoke<SqlWords>("metadata_list_sql_words", args),
   tableDataExecute: (request: TableDataExecuteRequest, onEvent: Channel<QueryStreamEvent>) =>

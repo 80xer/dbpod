@@ -11,8 +11,7 @@ export type TableDataTarget = {
   schema: string;
   name: string;
 };
-/** "script" only applies to views; other relations fall back to "data". */
-export type TableDataMode = "properties" | "data" | "script";
+export type TableDataMode = "properties" | "data";
 
 export type QueryTabState = {
   id: string;

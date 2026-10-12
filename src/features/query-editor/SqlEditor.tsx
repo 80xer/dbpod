@@ -3,7 +3,7 @@ import { acceptCompletion, autocompletion, completionStatus, startCompletion } f
 import { indentWithTab } from "@codemirror/commands";
 import { findNext, findPrevious, gotoLine, openSearchPanel, search, selectNextOccurrence, selectSelectionMatches } from "@codemirror/search";
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
-import { EditorState, Prec } from "@codemirror/state";
+import { EditorSelection, EditorState, Prec, StateEffect, StateField, type SelectionRange } from "@codemirror/state";
 import { EditorView, keymap, tooltips, type Command, type KeyBinding } from "@codemirror/view";
 import { parseMixed, type SyntaxNode } from "@lezer/common";
 import { tags } from "@lezer/highlight";
@@ -13,6 +13,39 @@ import { getAppSettings } from "../../entities/settings/appSettings";
 import { shortcutToCodeMirror } from "../../entities/settings/shortcuts";
 import { formatSqlInEditor } from "./formatSql";
 import { sqlCompletionSource } from "./sqlCompletion";
+
+const setSelectionOrigin = StateEffect.define<SelectionRange | null>();
+
+/**
+ * The selection from before Mod+L or Mod+Shift+L started adding occurrences;
+ * Escape returns there. Edits move it along with the text. A click or arrow key
+ * that leaves a single cursor ends the session, since there is nothing left to undo.
+ */
+const selectionOrigin = StateField.define<SelectionRange | null>({
+  create: () => null,
+  update(origin, tr) {
+    for (const effect of tr.effects) if (effect.is(setSelectionOrigin)) return effect.value;
+    if (!origin || (tr.isUserEvent("select") && tr.newSelection.ranges.length === 1)) return null;
+    return tr.docChanged ? origin.map(tr.changes) : origin;
+  },
+});
+
+/** Runs a command that adds occurrences, remembering where the first press started. */
+function fromOrigin(command: Command): Command {
+  return (view) => {
+    const origin = view.state.field(selectionOrigin) ?? view.state.selection.main;
+    if (!command(view)) return false;
+    view.dispatch({ effects: setSelectionOrigin.of(origin) });
+    return true;
+  };
+}
+
+const returnToOrigin: Command = (view) => {
+  const origin = view.state.field(selectionOrigin);
+  if (!origin) return false;
+  view.dispatch({ selection: EditorSelection.create([origin]), effects: setSelectionOrigin.of(null), scrollIntoView: true });
+  return true;
+};
 
 /**
  * Deleting edits a name as much as typing does, but CodeMirror only opens the list
@@ -119,10 +152,10 @@ export function SqlEditor({
       [shortcuts.findNext, findNext, "Mod-g"],
       [shortcuts.findPrevious, findPrevious, "Mod-Shift-g"],
       [shortcuts.gotoLine, gotoLine, "Mod-Alt-g"],
-      [shortcuts.selectMatches, selectSelectionMatches, "Mod-Shift-l"],
+      [shortcuts.selectMatches, fromOrigin(selectSelectionMatches), "Mod-Shift-l"],
       // Each press adds the next occurrence as another cursor; typing then edits every one.
       // basicSetup already allows multiple selections and draws them.
-      [shortcuts.addNextMatch, selectNextOccurrence, "Mod-d"],
+      [shortcuts.addNextMatch, fromOrigin(selectNextOccurrence), "Mod-d"],
     ];
     const view = new EditorView({
       parent: hostRef.current,
@@ -144,6 +177,7 @@ export function SqlEditor({
           tooltips({ parent: document.body }),
           syntaxHighlighting(dbpodHighlightStyle),
           EditorState.readOnly.of(readOnly),
+          selectionOrigin,
           EditorView.editable.of(!readOnly),
           EditorView.contentAttributes.of({ "aria-label": readOnly ? "정의 SQL" : "SQL 편집기", "aria-readonly": String(readOnly), tabindex: "0" }),
           EditorView.updateListener.of((u) => {
@@ -167,6 +201,9 @@ export function SqlEditor({
               ...bind(shortcuts.formatSql, (target) => readOnly || formatSqlInEditor(target)),
               // Opens the list on the word under the cursor without typing another letter.
               ...(readOnly ? [] : bind(shortcuts.triggerCompletion, startCompletion)),
+              // Escape first leaves an occurrence selection for where it began;
+              // with none open it falls through to cancelling the query.
+              { key: "Escape", run: returnToOrigin },
               ...bind(shortcuts.cancelQueryAlternate, () => {
                 cancelRef.current?.();
                 return true;

@@ -299,15 +299,14 @@ it("uses Tab and Shift+Tab for editor indentation without moving focus", () => {
   expect(view.state.doc.toString()).toBe("SELECT 1;");
 });
 
-it("adds the next occurrence as another cursor on Cmd+Shift+D, and typing edits every cursor", () => {
+it("adds the next occurrence as another selection on Cmd+L, and typing edits every one", () => {
   let view!: EditorView;
   render(<SqlEditor initialSql="SELECT id, id FROM t WHERE id = 1;" onViewReady={(next) => { if (next) view = next; }} />);
   const content = screen.getByLabelText("SQL 편집기");
   content.focus();
   view.dispatch({ selection: { anchor: 7, head: 9 } });
-  // Shift+letter arrives as the upper-case key plus the base keyCode, which is how
-  // CodeMirror tells "Mod-Shift-d" apart from the inert "Mod-d" underneath it.
-  const addNext = () => fireEvent.keyDown(content, { key: "D", code: "KeyD", keyCode: 68, ctrlKey: true, shiftKey: true });
+  // jsdom is not a Mac, so Mod is Ctrl here.
+  const addNext = () => fireEvent.keyDown(content, { key: "l", code: "KeyL", keyCode: 76, ctrlKey: true });
   addNext();
   expect(view.state.selection.ranges.map((r) => view.state.sliceDoc(r.from, r.to))).toEqual(["id", "id"]);
   addNext();
@@ -315,6 +314,44 @@ it("adds the next occurrence as another cursor on Cmd+Shift+D, and typing edits 
   view.dispatch(view.state.replaceSelection("pk"));
   expect(view.state.doc.toString()).toBe("SELECT pk, pk FROM t WHERE pk = 1;");
   expect(view.state.selection.ranges).toHaveLength(3);
+});
+
+it.each([
+  // A bare cursor inside the first id: the first press selects the word under it.
+  ["Cmd+L", { key: "l", code: "KeyL", keyCode: 76, ctrlKey: true }, 3, { anchor: 8 }, [13, 13]],
+  // Selecting all needs a selection to match; one press takes every id.
+  ["Cmd+Shift+L", { key: "L", code: "KeyL", keyCode: 76, ctrlKey: true, shiftKey: true }, 1, { anchor: 7, head: 9 }, [12, 14]],
+] as const)("Escape after %s returns to where the selecting began, even after edits", (_, keys, presses, start, back) => {
+  let view!: EditorView;
+  const onCancel = vi.fn();
+  render(<SqlEditor initialSql="SELECT id, id FROM t WHERE id = 1;" onCancel={onCancel} onViewReady={(next) => { if (next) view = next; }} />);
+  const content = screen.getByLabelText("SQL 편집기");
+  content.focus();
+  view.dispatch({ selection: start });
+  for (let i = 0; i < presses; i++) fireEvent.keyDown(content, keys);
+  expect(view.state.selection.ranges).toHaveLength(3);
+  // Text typed before the origin moves it along with the text.
+  view.dispatch({ changes: { from: 0, insert: "-- x\n" } });
+  fireEvent.keyDown(content, { key: "Escape", code: "Escape", keyCode: 27 });
+  expect(view.state.selection.ranges.map((r) => [r.anchor, r.head])).toEqual([back]);
+  expect(onCancel).not.toHaveBeenCalled();
+  // With no occurrence selection left, Escape cancels the query as before.
+  fireEvent.keyDown(content, { key: "Escape", code: "Escape", keyCode: 27 });
+  expect(onCancel).toHaveBeenCalledTimes(1);
+});
+
+it("ends the occurrence selection once a click leaves a single cursor", () => {
+  let view!: EditorView;
+  const onCancel = vi.fn();
+  render(<SqlEditor initialSql="SELECT id, id FROM t;" onCancel={onCancel} onViewReady={(next) => { if (next) view = next; }} />);
+  const content = screen.getByLabelText("SQL 편집기");
+  content.focus();
+  view.dispatch({ selection: { anchor: 7, head: 9 } });
+  fireEvent.keyDown(content, { key: "l", code: "KeyL", keyCode: 76, ctrlKey: true });
+  view.dispatch({ selection: { anchor: 0 }, userEvent: "select.pointer" });
+  fireEvent.keyDown(content, { key: "Escape", code: "Escape", keyCode: 27 });
+  expect(view.state.selection.main.head).toBe(0);
+  expect(onCancel).toHaveBeenCalledTimes(1);
 });
 
 it("renders the completion list outside the editor, which clips its overflow", async () => {

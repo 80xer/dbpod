@@ -23,6 +23,7 @@ vi.mock("../../shared/ipc/invoke", () => ({ ipc: {
   queryExecute: vi.fn(), queryCancel: vi.fn(), tableDataExecute: vi.fn(), queryAckChunk: vi.fn(), metadataGetTable: vi.fn(),
   resultRelease: vi.fn(), querySessionClose: vi.fn(), connectionClose: vi.fn(),
   connectionSwitchDatabase: vi.fn(), connectionReconnect: vi.fn(), metadataListDatabases: vi.fn(), metadataGetRoutineDefinition: vi.fn(), metadataGetViewDefinition: vi.fn(),
+  metadataListIndexes: vi.fn(), metadataGetTableDdl: vi.fn(),
 } }));
 vi.mock("../../entities/workspace/persistence", () => ({
   restoreWorkspace: vi.fn(), saveWorkspaceSoon: vi.fn(), saveWorkspaceNow: vi.fn(), preloadSnapshot: vi.fn(),
@@ -68,7 +69,7 @@ vi.mock("../../features/query-editor/SqlEditor", async () => {
           caret.current = selection;
           input.current?.setSelectionRange(selection.anchor, selection.head);
         },
-        state: { selection: { main }, doc: { toString: () => sql.current, get length() { return sql.current.length; } } },
+        state: { selection: { main }, sliceDoc: (from: number, to: number) => sql.current.slice(from, to), doc: { toString: () => sql.current, get length() { return sql.current.length; } } },
       } as unknown as EditorView);
       return () => onViewReady?.(null);
     }, []);
@@ -158,6 +159,24 @@ it("keeps each connection's tabs and SQL drafts when routing A → B → A", asy
   expect(editor().value).toBe("SELECT 'A changed'");
   expect(workspaceStates.get("A")!.tabs.map((item) => item.id)).toEqual(["A-tab"]);
   expect(sqlDrafts.get("B-tab")).toBe("SELECT 'B'");
+});
+
+it("refuses a selection holding several statements without calling the backend, but runs one followed by a comment", async () => {
+  await mountWorkspace();
+  const script = "BEGIN;\nINSERT INTO t VALUES (1);\nCOMMIT;";
+  fireEvent.change(editor(), { target: { value: script } });
+  editor().setSelectionRange(0, script.length);
+  fireEvent.select(editor());
+  await act(async () => { fireEvent.click(runButton()); });
+  expect(ipc.queryExecute).not.toHaveBeenCalled();
+  expect(screen.getByRole("alert").textContent).toContain("문장이 3개");
+
+  const single = "INSERT INTO t VALUES (';'), ($$;$$); -- loaded; done";
+  fireEvent.change(editor(), { target: { value: single } });
+  editor().setSelectionRange(0, single.length);
+  fireEvent.select(editor());
+  await act(async () => { fireEvent.click(runButton()); });
+  expect(ipc.queryExecute).toHaveBeenCalledWith(expect.objectContaining({ sql: single }), expect.anything());
 });
 
 it.each(["HOME", "연결 추가"])("opens connections via %s and returns to the live workspace without disconnecting or losing results", async (linkName) => {
@@ -320,6 +339,20 @@ it("closes the active tab with Cmd+W without closing the application", async () 
   expect(ipc.connectionClose).not.toHaveBeenCalled();
 });
 
+it("opens a new query tab with Cmd+T and puts the caret in it", async () => {
+  await mountWorkspace();
+  const before = workspaceStates.get("A")!.activeTabId;
+  const newTab = new KeyboardEvent("keydown", { key: "t", code: "KeyT", metaKey: true, bubbles: true, cancelable: true });
+  await act(async () => { fireEvent(editor(), newTab); });
+  const state = workspaceStates.get("A")!;
+  expect(state.tabs).toHaveLength(2);
+  expect(state.activeTabId).not.toBe(before);
+  expect(state.tabs.find((t) => t.id === state.activeTabId)!.kind).toBe("query");
+  expect(newTab.defaultPrevented).toBe(true);
+  await waitFor(() => expect(document.activeElement).toBe(editor()));
+  expect(editor().value).toBe("");
+});
+
 it("opens function/procedure code in reusable read-only tabs, refreshes it and recovers from lookup failure", async () => {
   const functionSql = "CREATE OR REPLACE FUNCTION public.lookup(integer) RETURNS integer LANGUAGE sql AS 'SELECT $1';";
   const procedureSql = "CREATE OR REPLACE PROCEDURE public.refresh_cache() LANGUAGE sql AS 'SELECT 1';";
@@ -360,41 +393,91 @@ it("opens function/procedure code in reusable read-only tabs, refreshes it and r
   expect(testRouter.state.location.pathname).toBe("/workspace/A");
 });
 
-it("adds a read-only Script tab to views only and keeps the chosen mode on the tab", async () => {
+it("shows a view's creation script as DDL under Properties, with only Properties and Data modes", async () => {
   const viewSql = "CREATE OR REPLACE VIEW public.active_orders AS\n SELECT 1;";
   vi.mocked(ipc.metadataGetViewDefinition).mockResolvedValue(viewSql);
   await mountWorkspace();
-  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Open alpha" })); });
-  await screen.findByRole("button", { name: "Properties" });
-  expect(screen.queryByRole("button", { name: "Script" })).toBeNull();
-
   await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Open view" })); });
   const viewTab = workspaceStates.get("A")!.activeTabId!;
-  const script = await screen.findByRole("button", { name: "Script" });
+  const properties = await screen.findByRole("button", { name: "Properties" });
   const modes = screen.getAllByRole("button", { name: /^(Properties|Data|Script)$/ }).map((b) => b.textContent);
-  expect(modes).toEqual(["Properties", "Data", "Script"]);
+  expect(modes).toEqual(["Properties", "Data"]);
+  fireEvent.click(properties);
+  expect(workspaceStates.get("A")!.tabs.find((t) => t.id === viewTab)!.tableDataMode).toBe("properties");
+  const nav = screen.getByRole("navigation", { name: "속성 항목" });
+  // A plain view has no indexes.
+  await waitFor(() => expect(within(nav).getAllByRole("button").map((b) => b.textContent)).toEqual(["Columns", "DDL"]));
   expect(ipc.metadataGetViewDefinition).not.toHaveBeenCalled();
-  fireEvent.click(script);
+
+  fireEvent.click(within(nav).getByRole("button", { name: "DDL" }));
   await waitFor(() => expect((screen.getByLabelText("정의 SQL") as HTMLTextAreaElement).value).toBe(viewSql));
   expect((screen.getByLabelText("정의 SQL") as HTMLTextAreaElement).readOnly).toBe(true);
   expect(ipc.metadataGetViewDefinition).toHaveBeenLastCalledWith({ connectionId: "A", relationOid: 300 });
-  expect(workspaceStates.get("A")!.tabs.find((t) => t.id === viewTab)!.tableDataMode).toBe("script");
+  expect(ipc.metadataGetTableDdl).not.toHaveBeenCalled();
 
   fireEvent.click(screen.getByRole("button", { name: "Data" }));
   expect(screen.queryByLabelText("정의 SQL")).toBeNull();
   expect(ipc.metadataGetViewDefinition).toHaveBeenCalledTimes(1);
 });
 
+it("lists table indexes one per row with expandable column rows and shows the table DDL", async () => {
+  const key = (name: string, descending: boolean | null, nullsFirst: boolean | null, nullable: boolean | null) =>
+    ({ name, isExpression: false, isKey: true, descending, nullsFirst, nullable });
+  vi.mocked(ipc.metadataListIndexes).mockResolvedValue([
+    { name: "alpha_pkey", method: "btree", isPrimary: true, isUnique: true, isValid: true, predicate: null, columns: [key("id", false, false, false)] },
+    { name: "alpha_ab", method: "btree", isPrimary: false, isUnique: false, isValid: true, predicate: "(b > 0)", columns: [
+      key("a", false, false, true),
+      key("b", true, false, false),
+      { name: "c", isExpression: false, isKey: false, descending: null, nullsFirst: null, nullable: true },
+    ] },
+  ]);
+  const ddl = "CREATE TABLE public.alpha (\n    id integer NOT NULL\n);";
+  vi.mocked(ipc.metadataGetTableDdl).mockResolvedValue(ddl);
+  await mountWorkspace();
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Open alpha" })); });
+  fireEvent.click(await screen.findByRole("button", { name: "Properties" }));
+  const nav = screen.getByRole("navigation", { name: "속성 항목" });
+  await waitFor(() => expect(within(nav).getAllByRole("button").map((b) => b.textContent)).toEqual(["Columns", "Indexes", "DDL"]));
+  expect(ipc.metadataListIndexes).not.toHaveBeenCalled();
+
+  fireEvent.click(within(nav).getByRole("button", { name: "Indexes" }));
+  const table = await screen.findByRole("table", { name: "인덱스" });
+  const cells = (row: HTMLElement) => within(row).getAllByRole("cell").map((c) => c.textContent);
+  await waitFor(() => expect(within(table).getAllByRole("row")).toHaveLength(3));
+  const [, pk, ab] = within(table).getAllByRole("row");
+  expect(cells(pk)).toEqual(["▸", "id", "alpha_pkey", "YES", "YES", "NO", "ASC", "btree", "-"]);
+  expect(cells(ab)).toEqual(["▸", "a, b INCLUDE (c)", "alpha_ab", "NO", "NO", "YES", "ASC, DESC NULLS LAST", "btree", "(b > 0)"]);
+  expect(ipc.metadataListIndexes).toHaveBeenLastCalledWith({ connectionId: "A", relationOid: 100 });
+
+  const toggle = within(ab).getByRole("button", { name: "alpha_ab 컬럼" });
+  fireEvent.click(toggle);
+  expect(toggle.getAttribute("aria-expanded")).toBe("true");
+  const rows = within(table).getAllByRole("row");
+  expect(rows.slice(3).map(cells)).toEqual([
+    ["", "a", "", "", "", "YES", "ASC", "", ""],
+    ["", "b", "", "", "", "NO", "DESC NULLS LAST", "", ""],
+    ["", "cINCLUDE", "", "", "", "YES", "-", "", ""],
+  ]);
+  fireEvent.click(toggle);
+  expect(within(table).getAllByRole("row")).toHaveLength(3);
+
+  fireEvent.click(within(nav).getByRole("button", { name: "DDL" }));
+  await waitFor(() => expect((screen.getByLabelText("정의 SQL") as HTMLTextAreaElement).value).toBe(ddl));
+  expect(ipc.metadataGetTableDdl).toHaveBeenLastCalledWith({ connectionId: "A", relationOid: 100 });
+  // The chosen section survives a trip to Data.
+  fireEvent.click(screen.getByRole("button", { name: "Data" }));
+  fireEvent.click(screen.getByRole("button", { name: "Properties" }));
+  expect(screen.getByRole("button", { name: "DDL" }).getAttribute("aria-current")).toBe("page");
+});
+
 it("styles the selected view mode like a query tab: blue in the focused pane, grey once another pane takes focus", async () => {
   await mountWorkspace();
   await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Open view" })); });
   const data = await screen.findByRole("button", { name: "Data" });
-  const script = await screen.findByRole("button", { name: "Script" });
   expect(data.className).toContain("border-blue-400");
-  for (const inactive of [screen.getByRole("button", { name: "Properties" }), script]) {
-    expect(inactive.className.split(" ")).toEqual(expect.arrayContaining(["border-transparent", "bg-gray-100", "hover:bg-gray-200"]));
-    expect(inactive.className).not.toContain("border-blue-400");
-  }
+  const properties = screen.getByRole("button", { name: "Properties" });
+  expect(properties.className.split(" ")).toEqual(expect.arrayContaining(["border-transparent", "bg-gray-100", "hover:bg-gray-200"]));
+  expect(properties.className).not.toContain("border-blue-400");
 
   await act(async () => { fireEvent.click(screen.getAllByRole("button", { name: "쿼리 영역 좌우 분할" })[0]); });
   expect(workspaceStates.get("A")!.tabs.find((t) => t.id === workspaceStates.get("A")!.activeTabId)!.kind).toBe("query");

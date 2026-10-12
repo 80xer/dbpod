@@ -97,6 +97,9 @@ MVP splitter가 구문을 안전하게 분리하지 못하면 임의 추측으�
 
 `Run All`과 selection 안의 다중 statement 실행은 MVP에서 거부한다. 다중 statement transaction, 부분 실패와 복수 결과 grouping 정책을 별도 명세한 후 추가한다.
 
+- UI: selection을 splitter로 나눠 comment·공백만 남는 조각을 뺀 문장이 2개 이상이면 Rust Core를 호출하지 않고 `선택 영역에 문장이 N개 있습니다. 한 번에 한 문장만 실행할 수 있습니다…`를 표시한다. 같은 Query Tab은 같은 session이므로 `BEGIN`, 각 문장, `COMMIT`을 차례로 실행하면 하나의 transaction이 된다.
+- Rust: SQLx extended query protocol의 prepare가 다중 statement를 구조적으로 거부한다(ADR-0006).
+
 ## 5. 실행 명령
 
 ### 5.1 기본 실행
@@ -153,7 +156,7 @@ type QueryExecuteRequest = {
 
 제약:
 
-- `sql`: UTF-8, 기본 최대 1MiB
+- `sql`: UTF-8, 최대 64MiB (byte 기준). 대량 적재는 multi-row `INSERT … VALUES (…), (…)` 한 문장으로 실행한다. 초과 시 `INVALID_REQUEST`와 실제 크기를 담은 한국어 메시지를 반환한다.
 - `maxRows`: 호환용 필드. 쿼리 UI는 `0`을 보내며 `query_execute`의 페이지 조회에서는 이 값으로 행 수를 제한하지 않는다. 내부 Table Data stream만 1~10,000 범위를 사용한다.
 - `timeoutMs`: 1,000~3,600,000, 기본 60,000
 - `requestId`: UI retry 중복 접수 방지용 UUID

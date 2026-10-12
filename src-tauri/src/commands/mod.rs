@@ -836,6 +836,24 @@ pub async fn metadata_get_view_definition(
 }
 
 #[tauri::command]
+pub async fn metadata_list_indexes(
+    state: State<'_, AppState>,
+    connection_id: String,
+    relation_oid: u32,
+) -> Result<Vec<crate::domain::metadata::TableIndex>, AppError> {
+    crate::application::metadata_service::list_indexes(&state, &connection_id, relation_oid).await
+}
+
+#[tauri::command]
+pub async fn metadata_get_table_ddl(
+    state: State<'_, AppState>,
+    connection_id: String,
+    relation_oid: u32,
+) -> Result<String, AppError> {
+    crate::application::metadata_service::get_table_ddl(&state, &connection_id, relation_oid).await
+}
+
+#[tauri::command]
 pub async fn metadata_list_sql_words(
     state: State<'_, AppState>,
     connection_id: String,

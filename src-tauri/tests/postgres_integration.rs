@@ -435,6 +435,48 @@ async fn syntax_error_maps_sqlstate_and_position_and_multistatement_rejected() {
     ));
 }
 
+/// A bulk load pasted as one multi-row INSERT is several MiB of SQL; it must run.
+#[tokio::test]
+async fn multi_mib_single_statement_runs_and_only_oversized_sql_is_refused() {
+    let (_node, state) = setup().await;
+    let run = |sql: String| {
+        let (sink, rx) = sink_channel();
+        let accepted = query_service::execute(&state, req("bulk", &sql, 10), sink).unwrap();
+        (accepted.execution_id, rx)
+    };
+
+    let (id, mut rx) = run("CREATE TABLE bulk_load (n int, note text)".into());
+    collect_events(&state, &id, &mut rx).await;
+
+    let rows: u64 = 12_000;
+    let note = "회계계정 ".repeat(20);
+    let values: Vec<String> = (0..rows).map(|n| format!("({n}, '{note}')")).collect();
+    let insert = format!(
+        "INSERT INTO bulk_load (n, note) VALUES\n{}",
+        values.join(",\n")
+    );
+    assert!(
+        insert.len() > 2 * 1024 * 1024,
+        "fixture must exceed the old 1 MiB cap"
+    );
+    let (id, mut rx) = run(insert);
+    let events = collect_events(&state, &id, &mut rx).await;
+    assert!(
+        matches!(events.last().unwrap(), QueryStreamEvent::Completed { .. }),
+        "{events:?}"
+    );
+    assert!(events.iter().any(|e| matches!(
+        e,
+        QueryStreamEvent::Command { affected_rows: Some(n), .. } if *n == rows
+    )));
+
+    let oversized = format!("SELECT '{}'", "x".repeat(64 * 1024 * 1024));
+    let (sink, _rx) = sink_channel();
+    let err = query_service::execute(&state, req("bulk", &oversized, 10), sink).unwrap_err();
+    assert_eq!(err.code, "INVALID_REQUEST");
+    assert!(err.message.contains("64MiB"), "{}", err.message);
+}
+
 #[tokio::test]
 async fn cancel_long_query_then_session_reusable() {
     let (_node, state) = setup().await;

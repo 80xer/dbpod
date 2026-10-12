@@ -31,6 +31,7 @@ import type { DatabaseObjectSummary } from "../../generated/ipc-types";
 import { clearCompletionCache } from "../../features/query-editor/sqlCompletion";
 import {
   firstKeyword,
+  splitStatements,
   statementAt,
   stripLiterals,
 } from "../../features/query-editor/statementSplitter";
@@ -226,6 +227,12 @@ function WorkspaceContent({ connectionId }: { connectionId: string }) {
         return;
       }
       let action: Parameters<typeof dispatch>[0] | null = null;
+      if (matches("newQueryTab")) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (!e.repeat) addQueryTab();
+        return;
+      }
       if (matches("splitPanel")) {
         e.preventDefault();
         e.stopPropagation();
@@ -309,6 +316,12 @@ function WorkspaceContent({ connectionId }: { connectionId: string }) {
     const sql = pickSql(tab.id);
     if (!sql) {
       setNotice("실행할 SQL이 없습니다.");
+      return;
+    }
+    // The backend prepares the SQL, so PostgreSQL would refuse a script anyway; say why up front.
+    const statements = splitStatements(sql).filter((s) => stripLiterals(s.sql).trim()).length;
+    if (statements > 1) {
+      setNotice(`선택 영역에 문장이 ${statements}개 있습니다. 한 번에 한 문장만 실행할 수 있습니다. 문장마다 커서를 두고 차례로 실행하세요. 같은 Query Tab에서는 BEGIN … COMMIT 트랜잭션이 이어집니다.`);
       return;
     }
     if (!(await confirmSql(sql))) return;
@@ -725,7 +738,7 @@ function WorkspaceContent({ connectionId }: { connectionId: string }) {
                   })}
                 </div>
                 <div className="flex shrink-0 items-center py-0.5">
-                  <button type="button" aria-label="새 쿼리 탭" title="이 영역에 쿼리 탭 추가" onClick={() => addQueryTab(false, group.id)} className="rounded px-2 text-sm text-gray-500 hover:bg-gray-200">+</button>
+                  <button type="button" aria-label="새 쿼리 탭" title={`이 영역에 쿼리 탭 추가 — ${displayShortcut(shortcuts.newQueryTab)}`} onClick={() => addQueryTab(false, group.id)} className="rounded px-2 text-sm text-gray-500 hover:bg-gray-200">+</button>
                   <button type="button" aria-label="쿼리 영역 좌우 분할" title={`좌우 분할 — ${displayShortcut(shortcuts.splitPanel)}`} onClick={() => addQueryTab(true, group.id)} className="rounded px-2 text-sm text-gray-500 hover:bg-gray-200">◫</button>
                   {groups.length > 1 && (
                     <button type="button" aria-label="분할 영역 닫기" title="이 영역의 탭 모두 닫기" onClick={() => void closeQueryTabs(state.tabs.filter((t) => group.tabIds.includes(t.id)))} className="rounded px-2 text-sm text-gray-500 hover:bg-gray-200">×</button>

@@ -15,7 +15,10 @@ afterEach(() => { cleanup(); resetAppSettings(); routerMock.back.mockClear(); })
 
 test("applies and persists appearance settings", () => {
   render(<SettingsPage />);
-  fireEvent.change(screen.getByLabelText("테마"), { target: { value: "dark" } });
+  const dark = screen.getByRole("radio", { name: "어둡게" }) as HTMLInputElement;
+  fireEvent.click(dark);
+  expect(dark.checked).toBe(true);
+  expect((screen.getByRole("radio", { name: "시스템 설정" }) as HTMLInputElement).checked).toBe(false);
   fireEvent.change(screen.getByLabelText("폰트"), { target: { value: "mono" } });
   fireEvent.change(screen.getByLabelText("폰트 크기"), { target: { value: "18" } });
 

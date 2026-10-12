@@ -315,7 +315,7 @@ Query Tab 하나에서 SQL을 작성하고 `Cmd/Ctrl + Enter`로 실행하여 �
 - [ ] selection이 있으면 selection을 실행 대상으로 추출한다.
 - [ ] selection이 없으면 cursor가 포함된 statement를 parser로 추출한다.
 - [ ] string, dollar quote, comment와 semicolon 경계를 정확히 처리한다.
-- [ ] 빈 statement와 MVP에서 금지한 다중 statement를 UI에서 차단한다.
+- [x] 빈 statement와 MVP에서 금지한 다중 statement를 UI에서 차단한다.
 - [ ] parser 오류 위치를 editor diagnostic으로 표시한다.
 - [ ] IME composition 중 shortcut 실행을 방지한다.
 

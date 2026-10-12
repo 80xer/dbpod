@@ -166,6 +166,8 @@ Production state must not be communicated through red color alone.
 
 The Connection Rail is the leftmost vertical region and switches between open Connection Workspaces.
 
+HOME stays at the top and the application settings icon stays at the bottom of the rail. The rail remains visible when no connections are open so settings are always accessible.
+
 ### 6.1 Connection item contents
 
 - Connection icon or generated initials
@@ -750,7 +752,7 @@ Mobile transformations:
 | Work Tabs | Next Work Tab | `Ctrl + Tab` |
 | Work Tabs | Previous Work Tab | `Ctrl + Shift + Tab` |
 | Work Tabs | Select numbered Work Tab | `Cmd/Ctrl + 1~9` |
-| Workspace | New Query Tab | Configurable; must not conflict with new Result execution |
+| Workspace | New Query Tab (active group, caret in editor) | `Cmd/Ctrl + T` by default; configurable. Left unbound if stored settings already use it |
 | Sidebar | Focus object search | `Cmd/Ctrl + P` or command palette mapping |
 
 Shortcuts are app-local key bindings, not OS-global shortcuts. All shortcut actions require accessible touch and pointer alternatives.
