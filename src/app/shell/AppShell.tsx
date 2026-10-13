@@ -4,7 +4,7 @@ import { resultIds, workspaceStates } from "../../entities/workspace/workspaceSt
 import { ipc } from "../../shared/ipc/invoke";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { getPersistenceError, saveWorkspaceNow, subscribePersistence } from "../../entities/workspace/persistence";
-import { Link, Outlet, useNavigate, useParams } from "@tanstack/react-router";
+import { Link, Outlet, useNavigate, useParams, useRouterState } from "@tanstack/react-router";
 import { useOpenConnections } from "../../entities/connection/openConnections";
 import { environmentStyles } from "../../entities/connection/environmentStyles";
 import { AIChatPanel } from "../../features/ai/AIChatPanel";
@@ -16,16 +16,16 @@ function ConnectionRail() {
   const connections = useOpenConnections();
   const params = useParams({ strict: false }) as { connectionId?: string };
   return (
-    <nav aria-label="열린 연결" className="flex w-12 shrink-0 flex-col items-center gap-2 border-r border-gray-200 bg-gray-50 py-2">
+    <nav aria-label="네비 영역" className="flex w-12 shrink-0 flex-col items-center gap-2 border-r border-gray-200 bg-gray-50 py-2">
       <Link
         to="/"
         activeOptions={{ exact: true }}
-        title="HOME — 연결은 유지됩니다"
-        aria-label="HOME"
+        title="새연결 화면 — 연결은 유지됩니다"
+        aria-label="새연결 화면"
         className={`flex h-11 w-10 flex-col items-center justify-center gap-0.5 rounded hover:bg-gray-200 ${params.connectionId ? "text-gray-600" : "bg-blue-50 text-blue-700"}`}
       >
         <span aria-hidden="true" className="text-xl leading-none">⌂</span>
-        <span className="text-[10px]">HOME</span>
+        <span className="text-[10px]">새연결</span>
       </Link>
       {connections.map(([id, p]) => (
         <Link
@@ -69,7 +69,12 @@ export function AppShell() {
   const params = useParams({ strict: false }) as { connectionId?: string };
   const connections = useOpenConnections();
   const navigate = useNavigate();
+  const pathname = useRouterState({ select: (state) => state.location.pathname });
+  const previousConnection = useRef<string | null>(null);
   const workspaceOpen = Boolean(params.connectionId && connections.some(([id]) => id === params.connectionId));
+  useEffect(() => {
+    if (workspaceOpen) previousConnection.current = params.connectionId!;
+  }, [workspaceOpen, params.connectionId]);
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.isComposing || event.repeat) return;
@@ -79,6 +84,21 @@ export function AppShell() {
       // first, so it has to stay out of the way while a combination is being captured.
       if (document.activeElement?.getAttribute("aria-label")?.endsWith("단축키")) return;
       const shortcuts = getAppSettings().shortcuts;
+      if (workspaceOpen && shortcutMatches(event, shortcuts.openConnections)) {
+        event.preventDefault();
+        event.stopPropagation();
+        void navigate({ to: "/" });
+        return;
+      }
+      if (pathname === "/" && shortcutMatches(event, shortcuts.closeTab)) {
+        event.preventDefault();
+        event.stopPropagation();
+        const connectionId = previousConnection.current;
+        if (connectionId && connections.some(([id]) => id === connectionId)) {
+          void navigate({ to: "/workspace/$connectionId", params: { connectionId } });
+        }
+        return;
+      }
       if (shortcutMatches(event, shortcuts.openSettings)) {
         event.preventDefault();
         document.querySelector<HTMLAnchorElement>('a[aria-label="설정"]')?.click();
@@ -102,11 +122,11 @@ export function AppShell() {
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [workspaceOpen, connections, params.connectionId, navigate]);
+  }, [workspaceOpen, connections, params.connectionId, pathname, navigate]);
   useEffect(() => {
     const preventBackspaceNavigation = (event: KeyboardEvent) => {
-      // The macOS window-close accelerator is removed natively. Keep Cmd+W
-      // inert outside a workspace so only Cmd+Q exits the application.
+      // The macOS window-close accelerator is removed natively; Cmd+W closes
+      // the frontmost view or tab without exiting the application.
       if (event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "w") {
         event.preventDefault();
         return;
@@ -160,7 +180,7 @@ export function AppShell() {
   return (
     <div className="flex h-screen flex-col bg-white text-gray-900">
       <header className="flex shrink-0 items-center border-b border-gray-200 px-3 py-1.5">
-        <Link to="/" aria-label="DBPod HOME" title="HOME" className="rounded hover:text-blue-700">
+        <Link to="/" aria-label="DBPod 새연결 화면" title="새연결 화면" className="rounded hover:text-blue-700">
           <h1 className="text-sm font-semibold tracking-tight">DBPod</h1>
         </Link>
         <span className="ml-2 text-xs text-gray-400">PostgreSQL client — MVP</span>

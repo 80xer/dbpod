@@ -38,3 +38,9 @@ it("leaves the new-tab shortcut unbound when stored settings already gave Mod+T 
   const kept = await loadWith({ formatSql: "Mod+KeyT" });
   expect(kept).toMatchObject({ formatSql: "Mod+KeyT", newQueryTab: "" });
 });
+
+it("adds Mod+N without taking an existing custom shortcut", async () => {
+  expect((await loadWith({})).openConnections).toBe("Mod+KeyN");
+  expect(await loadWith({ formatSql: "Mod+KeyN" })).toMatchObject({ formatSql: "Mod+KeyN", openConnections: "" });
+  expect((await loadWith({ openConnections: "Mod+Shift+KeyN" })).openConnections).toBe("Mod+Shift+KeyN");
+});

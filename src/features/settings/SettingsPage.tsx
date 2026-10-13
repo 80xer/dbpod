@@ -64,7 +64,7 @@ export function SettingsPage() {
     <div className="mx-auto max-w-2xl p-6">
       <div className="mb-6 flex items-center justify-between">
         <div>
-          <h2 className="text-lg font-semibold">설정</h2>
+          <h2 className="text-lg font-semibold">설정화면</h2>
           <p className="mt-1 text-sm text-gray-500">
             변경 사항은 즉시 적용되고 이 기기에 저장됩니다.
             {settings.shortcuts.closeTab !== UNBOUND && ` ${displayShortcut(settings.shortcuts.closeTab)}로 닫습니다.`}

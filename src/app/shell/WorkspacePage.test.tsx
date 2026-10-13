@@ -179,7 +179,7 @@ it("refuses a selection holding several statements without calling the backend, 
   expect(ipc.queryExecute).toHaveBeenCalledWith(expect.objectContaining({ sql: single }), expect.anything());
 });
 
-it.each(["HOME", "연결 추가"])("opens connections via %s and returns to the live workspace without disconnecting or losing results", async (linkName) => {
+it.each(["새연결 화면", "연결 추가", "Cmd+N"])("opens connections via %s and returns with Cmd+W without disconnecting or losing results", async (linkName) => {
   const testRouter = await mountWorkspace();
   fireEvent.change(editor(), { target: { value: "SELECT 'preserved draft'" } });
   await act(async () => { fireEvent.click(runButton()); });
@@ -190,14 +190,18 @@ it.each(["HOME", "연결 추가"])("opens connections via %s and returns to the 
   fireEvent(runButton(), backspace);
   expect(backspace.defaultPrevented).toBe(true);
   expect(testRouter.state.location.pathname).toBe("/workspace/A");
-  expect(screen.getByRole("link", { name: "HOME" }).textContent).toContain("HOME");
+  expect(screen.getByRole("link", { name: "새연결 화면" }).textContent).toContain("새연결");
   expect(screen.getByRole("link", { name: "연결 추가" }).textContent).toBe("+");
-  await act(async () => { fireEvent.click(screen.getByRole("link", { name: linkName })); });
+  await act(async () => {
+    if (linkName === "Cmd+N") fireEvent.keyDown(editor(), { key: "n", code: "KeyN", metaKey: true });
+    else fireEvent.click(screen.getByRole("link", { name: linkName }));
+  });
   await waitFor(() => expect(testRouter.state.location.pathname).toBe("/"));
   expect(openConnections.get("A")).toBeDefined();
   expect(workspaceStates.get("A")).toBe(workspace);
   expect(resultStore.getSnapshot(resultId).rows).toBe(rows);
-  await act(async () => { fireEvent.click(screen.getByRole("link", { name: "A / db" })); });
+  await act(async () => { fireEvent.keyDown(document.body, { key: "w", code: "KeyW", metaKey: true }); });
+  await waitFor(() => expect(testRouter.state.location.pathname).toBe("/workspace/A"));
   await waitFor(() => expect(editor().value).toBe("SELECT 'preserved draft'"));
   expect(tab().activeResultTabId).toBe(resultId);
   expect(ipc.queryExecute).toHaveBeenCalledTimes(1);
@@ -245,7 +249,7 @@ it("splits beside the current editor, runs each pane independently and preserves
   expect(ipc.queryExecute).toHaveBeenLastCalledWith(expect.objectContaining({ queryTabId: "A-tab", sql: "SELECT 'left'" }), expect.anything());
   expect(resultStore.getSnapshot(rightResultId).status).toBe("completed");
 
-  await act(async () => { fireEvent.click(screen.getByRole("link", { name: "HOME" })); });
+  await act(async () => { fireEvent.click(screen.getByRole("link", { name: "새연결 화면" })); });
   await act(async () => { fireEvent.click(screen.getByRole("link", { name: "A / db" })); });
   await waitFor(() => expect(screen.getAllByRole("textbox", { name: "SQL" }).map((el) => (el as HTMLTextAreaElement).value)).toEqual(["SELECT 'left'", "SELECT 'right'"]));
   expect(getTabGroups(workspaceStates.get("A")!).map((group) => group.activeTabId)).toEqual(["A-tab", rightTab.id]);

@@ -9,7 +9,7 @@ import type { ConnectionProfile } from "../../generated/ipc-types";
 import type { ComponentProps } from "react";
 const mock = vi.hoisted(() => ({ handler: undefined as undefined | ((event: { preventDefault: () => void }) => Promise<void>), save: vi.fn(), close: vi.fn(), destroy: vi.fn(), navigate: vi.fn(), params: {} as { connectionId?: string } }));
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ onCloseRequested: async (handler: typeof mock.handler) => { mock.handler = handler; return () => {}; }, destroy: mock.destroy }) }));
-vi.mock("@tanstack/react-router", () => ({ Link: ({ children, to, className, title, "aria-label": label }: ComponentProps<"a"> & { to: string }) => <a href={to} className={className} title={title} aria-label={label}>{children}</a>, Outlet: () => null, useParams: () => mock.params, useNavigate: () => mock.navigate }));
+vi.mock("@tanstack/react-router", () => ({ Link: ({ children, to, className, title, "aria-label": label }: ComponentProps<"a"> & { to: string }) => <a href={to} className={className} title={title} aria-label={label}>{children}</a>, Outlet: () => null, useParams: () => mock.params, useNavigate: () => mock.navigate, useRouterState: () => mock.params.connectionId ? `/workspace/${mock.params.connectionId}` : "/" }));
 vi.mock("../../shared/ipc/invoke", () => ({ ipc: { connectionClose: mock.close } }));
 vi.mock("../../entities/workspace/persistence", () => ({ getPersistenceError: () => "", subscribePersistence: () => () => {}, saveWorkspaceNow: mock.save }));
 beforeEach(() => {
@@ -79,12 +79,33 @@ test.each([false, true])("settings stays at the bottom of the HOME rail with ope
   if (connected) openConnections.set("a", profile("A"));
   render(<AppShell />);
   const settings = screen.getByRole("link", { name: "설정" });
-  const rail = screen.getByRole("navigation", { name: "열린 연결" });
-  expect(rail.contains(screen.getByRole("link", { name: "HOME" }))).toBe(true);
+  const rail = screen.getByRole("navigation", { name: "네비 영역" });
+  expect(rail.contains(screen.getByRole("link", { name: "새연결 화면" }))).toBe(true);
   expect(rail.lastElementChild).toBe(settings);
   expect(settings.classList.contains("mt-auto")).toBe(true);
   expect(settings.getAttribute("href")).toBe("/settings");
   expect(document.querySelector("header")?.contains(settings)).toBe(false);
+});
+
+test("Cmd+W returns to the last viewed connection and stays home if it is gone or was never viewed", () => {
+  openConnections.set("a", profile("A"));
+  openConnections.set("b", profile("B"));
+  const { rerender } = render(<AppShell />);
+  const close = () => fireEvent.keyDown(document.body, { key: "w", code: "KeyW", metaKey: true });
+  close();
+  expect(mock.navigate).not.toHaveBeenCalled();
+  for (const connectionId of ["a", "b"]) {
+    mock.params = { connectionId };
+    rerender(<AppShell />);
+  }
+  mock.params = {};
+  rerender(<AppShell />);
+  close();
+  expect(mock.navigate).toHaveBeenLastCalledWith({ to: "/workspace/$connectionId", params: { connectionId: "b" } });
+  mock.navigate.mockClear();
+  act(() => { openConnections.delete("b"); });
+  close();
+  expect(mock.navigate).not.toHaveBeenCalled();
 });
 
 test("the connection keys step through the rail in order and wrap at both ends", () => {

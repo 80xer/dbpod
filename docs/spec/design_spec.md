@@ -1,7 +1,7 @@
 # DBPod Layout Design Specification
 
 - Status: MVP baseline
-- Last updated: 2026-07-27
+- Last updated: 2026-10-13
 - Target: Desktop-first MVP with responsive mobile architecture
 - Database: PostgreSQL
 
@@ -76,6 +76,30 @@ Desktop shows multiple levels at once. Mobile presents the same levels using swi
 - Security indicators must not expose credentials or connection strings.
 
 ## 3. Terminology
+
+### 화면·영역 명칭
+
+제품 대화와 문서에서 화면·영역은 아래 명칭을 사용한다. 코드의 영문 컴포넌트·상태 이름은 대응하는 구현 용어다.
+
+| 명칭 | 의미 / 구현 대응 |
+| --- | --- |
+| 새연결 화면 | 앱 시작 시 처음 보이는 화면. 연결 프로필 추가·목록 조회·편집·제거. `ConnectionsPage`, `/` |
+| 연결된 화면 | 연결을 선택해 접속한 작업 화면. `WorkspacePage`, `/workspace/$connectionId` |
+| 네비 영역 | 최좌측의 열린 연결 목록과 연결 전환 영역. `Connection Rail` |
+| 경로영역 | 연결된 화면의 좌측 DB·스키마·객체 탐색 영역. `Object Sidebar` |
+| 쿼리영역 | SQL 편집기와 쿼리 탭을 사용하는 영역. `Query Tab` / editor |
+| 결과영역 | 실행 결과 탭·그리드를 표시하는 영역. `Result Panel` |
+| 저장영역 | 저장된 쿼리를 조회·열기·관리하는 영역. saved queries |
+| AI영역 | AI 대화와 명령을 사용하는 영역. `AIChatPanel` |
+| 설정화면 | 앱 설정을 변경하는 화면. `SettingsPage`, `/settings` |
+
+새연결 화면과 설정화면으로 이동해도 열린 연결, SQL 초안, 결과와 미저장 편집은 유지한다.
+연결된 화면에서 `Cmd/Ctrl + N`은 새연결 화면을 연다. 새연결 화면에서 `Cmd/Ctrl + W`는 마지막으로 사용한 연결된 화면으로 돌아간다.
+돌아갈 연결이 없거나 이미 종료되었다면 새연결 화면에 머문다. 앱 창을 닫거나 다른 연결을 임의로 선택하지 않는다.
+설정화면을 거쳐도 마지막 연결 기억은 유지하며, 모달 대화상자가 열려 있는 동안 화면 전환 단축키는 실행하지 않는다.
+설정화면에서 열기 단축키를 변경할 수 있고, 돌아가기는 기존 현재 탭 닫기 단축키를 함께 사용한다(기본 `Cmd/Ctrl + W`).
+
+### 구현 용어
 
 | Term | Definition |
 | --- | --- |
@@ -166,7 +190,7 @@ Production state must not be communicated through red color alone.
 
 The Connection Rail is the leftmost vertical region and switches between open Connection Workspaces.
 
-HOME stays at the top and the application settings icon stays at the bottom of the rail. The rail remains visible when no connections are open so settings are always accessible.
+새연결 화면 stays at the top and the application settings icon stays at the bottom of the 네비 영역. The rail remains visible when no connections are open so 설정화면 is always accessible.
 
 ### 6.1 Connection item contents
 
@@ -746,6 +770,8 @@ Mobile transformations:
 
 | Scope | Action | Shortcut |
 | --- | --- | --- |
+| 연결된 화면 | 새연결 화면 열기 | `Cmd/Ctrl + N` by default; configurable |
+| 새연결 화면 | 이전 연결된 화면으로 돌아가기 | Current close-tab binding, `Cmd/Ctrl + W` by default |
 | Query Tab | Run selected SQL or current statement | `Cmd/Ctrl + Enter` |
 | Query Tab | Run in New Result Tab | `Cmd/Ctrl + Shift + Enter` |
 | Query Tab | Cancel current execution | `Esc` or `Cmd/Ctrl + .` |

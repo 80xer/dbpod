@@ -36,6 +36,7 @@ export const shortcutDefinitions = [
   { id: "aiSend", label: "AI 메시지 전송", defaultValue: "Mod+Enter", scope: "ai", group: "AI" },
   { id: "previousConnection", label: "이전 연결", defaultValue: "Mod+Shift+ArrowUp", group: "앱" },
   { id: "nextConnection", label: "다음 연결", defaultValue: "Mod+Shift+ArrowDown", group: "앱" },
+  { id: "openConnections", label: "새연결 화면 열기", defaultValue: "Mod+KeyN", group: "앱" },
   { id: "openSettings", label: "설정 열기", defaultValue: "Mod+Comma", group: "앱" },
 ] as const;
 

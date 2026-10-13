@@ -56,6 +56,9 @@ function load(): AppSettings {
     if (value && stored && stored.newQueryTab === undefined && Object.values(stored).includes("Mod+KeyT")) {
       value.shortcuts = { ...value.shortcuts, newQueryTab: "" } as ShortcutSettings;
     }
+    if (value && stored && stored.openConnections === undefined && Object.values(stored).includes("Mod+KeyN")) {
+      value.shortcuts = { ...value.shortcuts, openConnections: "" } as ShortcutSettings;
+    }
     return {
       theme: value && ["system", "light", "dark"].includes(value.theme ?? "") ? value.theme as AppTheme : defaultAppSettings.theme,
       font: value && appFonts.some((option) => option.value === value.font) ? value.font as AppFont : defaultAppSettings.font,

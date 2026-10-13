@@ -209,7 +209,7 @@ export function ConnectionsPage() {
   };
 
   return (
-    <div className="mx-auto flex max-w-4xl flex-col gap-6 p-6 md:flex-row">
+    <div aria-label="새연결 화면" className="mx-auto flex max-w-4xl flex-col gap-6 p-6 md:flex-row">
       <section className="md:w-1/2">
         <h2 className="mb-3 text-sm font-semibold">저장된 연결</h2>
         {profiles.isPending && <p role="status" className="text-sm text-gray-500">연결 프로필 불러오는 중…</p>}
