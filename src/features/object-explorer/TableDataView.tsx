@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { editStore } from "../../entities/result/editStore";
 import { resultStore } from "../../entities/result/resultStore";
 import { tableDataEditability, type Editability } from "../data-editing/editability";
@@ -30,6 +30,7 @@ type Props = {
 export function TableDataView({ connectionId, tab, readOnly, focused, onModeChange }: Props) {
   const target = tab.tableData;
   const resultTabId = `${tab.id}:data`;
+  const resultAreaRef = useRef<HTMLDivElement>(null);
   const [view, setView] = useState<ViewState>(
     () => tableDataViews.get(tab.id) ?? { sortAttribute: null, sortDescending: false },
   );
@@ -51,7 +52,7 @@ export function TableDataView({ connectionId, tab, readOnly, focused, onModeChan
   const fetchPage = useCallback(
     async (next: ViewState) => {
       if (!target || resultStore.getSnapshot(resultTabId).status === "running" || editStore.getSnapshot(resultTabId).locked) return;
-      if (editStore.getSnapshot(resultTabId).pendingCount > 0) {
+      if (editStore.getSnapshot(resultTabId).pendingCount > 0 || resultAreaRef.current?.querySelector('[aria-label="셀 편집"]')) {
         if (!(await confirmDialog("저장하지 않은 변경이 있습니다. 버리고 새로 조회할까요?"))) return;
       }
       editStore.clear(resultTabId);
@@ -106,7 +107,7 @@ export function TableDataView({ connectionId, tab, readOnly, focused, onModeChan
   const dataMode: TableDataMode = tab.tableDataMode === "properties" ? "properties" : "data";
 
   return (
-      <div data-result-area="" className="flex h-full min-h-0 flex-col">
+      <div ref={resultAreaRef} data-result-area="" className="flex h-full min-h-0 flex-col">
       <div className="flex shrink-0 items-center border-b border-gray-200 bg-gray-50">
         <div className="flex items-center gap-2 px-3 py-1">
           <span className="text-xs font-medium">
@@ -144,6 +145,7 @@ export function TableDataView({ connectionId, tab, readOnly, focused, onModeChan
           <div className="flex shrink-0 items-center gap-1 border-b border-gray-200 bg-gray-50 px-3 py-1 text-xs">
             <button
               type="button"
+              data-refresh-result=""
               onClick={() => void fetchPage(view)}
               disabled={running}
               className="ml-1 rounded border border-gray-300 px-2 py-0.5 hover:bg-gray-100 disabled:opacity-40"

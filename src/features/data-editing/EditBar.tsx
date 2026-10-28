@@ -7,10 +7,10 @@ import type { Editability, EditableInfo } from "./editability";
 import { applyServerValues, buildRowChanges, commitChangeSet } from "./saveChanges";
 import { confirmDialog } from "../../shared/ui/prompt";
 
-function Dialog({ children, onCancel }: { children: React.ReactNode; onCancel: () => void }) {
+function Dialog({ children, onCancel, label = "변경 사항 확인" }: { children: React.ReactNode; onCancel: () => void; label?: string }) {
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => { ref.current?.showModal(); return () => ref.current?.close(); }, []);
-  return <dialog ref={ref} aria-label="변경 사항 확인" onCancel={(e) => { e.preventDefault(); onCancel(); }} className="m-auto max-h-[80vh] w-[560px] max-w-[90vw] overflow-auto rounded-lg bg-white p-4 shadow-xl backdrop:bg-black/30">{children}</dialog>;
+  return <dialog ref={ref} aria-label={label} onCancel={(e) => { e.preventDefault(); onCancel(); }} className="m-auto max-h-[80vh] w-[560px] max-w-[90vw] overflow-auto rounded-lg bg-white p-4 shadow-xl backdrop:bg-black/30">{children}</dialog>;
 }
 
 export function EditBar({
@@ -29,6 +29,7 @@ export function EditBar({
   const [preview, setPreview] = useState<ChangesPreviewResponse | null>(null);
   const [conflicts, setConflicts] = useState<RowConflict[] | null>(null);
   const [message, setMessage] = useState("");
+  const [commitError, setCommitError] = useState<{ message: string; sqlState?: string | null } | null>(null);
   const [showValues, setShowValues] = useState(false);
   const [busy, setBusy] = useState(false);
 
@@ -102,11 +103,13 @@ export function EditBar({
         setConflicts(outcome.conflicts);
       } else {
         setMessage(`저장 실패: ${outcome.message}`);
+        setCommitError(outcome);
       }
     } catch (e) {
       setPreview(null);
-      const err = e as { message?: string };
+      const err = e as { message?: string; sqlState?: string | null };
       setMessage(`저장 실패: ${err?.message ?? String(e)}`);
+      setCommitError({ message: err?.message ?? String(e), sqlState: err?.sqlState });
     } finally {
       committing.current = false;
       previewId.current = null;
@@ -135,7 +138,7 @@ export function EditBar({
         <span className="text-gray-600">
           {edits.pendingCount > 0 ? `변경 ${edits.pendingCount}건 대기 중` : "편집 가능 (더블클릭)"}
         </span>
-        {message && <span className="text-gray-700">{message}</span>}
+        {message && <span role="status" className="text-gray-700">{message}</span>}
         <div className="ml-auto flex gap-2">
           <button
             type="button"
@@ -190,8 +193,9 @@ export function EditBar({
               {JSON.stringify(buildRowChanges(info, resultStore.getSnapshot(resultTabId), edits), null, 2)}
             </pre>
           )}
+          {busy && <p role="status" className="mb-3 text-sm text-gray-600">저장 중… 데이터베이스의 응답을 기다리고 있습니다.</p>}
           <div className="flex justify-end gap-2">
-            <button type="button" onClick={cancelPreview} className="rounded border border-gray-300 px-3 py-1 text-sm hover:bg-gray-50">
+            <button type="button" disabled={busy} onClick={cancelPreview} className="rounded border border-gray-300 px-3 py-1 text-sm hover:bg-gray-50 disabled:opacity-50">
               취소
             </button>
             <button
@@ -200,8 +204,20 @@ export function EditBar({
               onClick={() => void commit()}
               className="rounded bg-green-600 px-3 py-1 text-sm text-white hover:bg-green-700 disabled:opacity-50"
             >
-              트랜잭션으로 저장
+              {busy ? "저장 중…" : "트랜잭션으로 저장"}
             </button>
+          </div>
+        </Dialog>
+      )}
+
+      {commitError && (
+        <Dialog label="저장 오류" onCancel={() => setCommitError(null)}>
+          <h3 className="mb-2 text-sm font-semibold">저장 오류</h3>
+          <p role="alert" className="mb-3 whitespace-pre-wrap break-words rounded bg-red-50 p-2 text-sm text-red-800">{commitError.message}</p>
+          {commitError.sqlState === "23505" && <p className="mb-3 text-sm text-gray-700">기본 키 또는 고유 키 값이 중복되어 전체 트랜잭션이 롤백되었습니다. 붙여넣은 ID와 다른 고유 열의 값을 확인해 주세요.</p>}
+          <p className="mb-3 text-xs text-gray-600">편집 내용은 그대로 유지됩니다. 오류와 저장 결과를 확인한 후 편집을 계속해 주세요.</p>
+          <div className="flex justify-end">
+            <button type="button" onClick={() => setCommitError(null)} className="rounded border border-gray-300 px-3 py-1 text-sm hover:bg-gray-50">편집으로 돌아가기</button>
           </div>
         </Dialog>
       )}

@@ -400,6 +400,8 @@ Query Tab
     └── Result Content
 ```
 
+Editor에서 `schema.table`(또는 `table`)을 선택한 채 패널 분할 단축키(기본 `Cmd/Ctrl + D`)를 누르면 Object Sidebar에서 그 테이블을 더블클릭했을 때와 같은 Table Data Tab을 새 패널로 연다. 따옴표 없는 이름은 소문자로 접고, 스키마가 없으면 `public`을 우선한다. 선택이 없거나 선택이 테이블·뷰 이름이 아니면 기존처럼 빈 Query Tab으로 분할한다.
+
 ### 9.1 Query Toolbar
 
 Required controls:

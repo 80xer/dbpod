@@ -23,12 +23,13 @@ import {
   workspaceStates,
   workspaceReducer,
   type QueryTabState,
+  type WorkspaceAction,
 } from "../../entities/workspace/workspaceStore";
 import { ObjectSidebar } from "../../features/object-explorer/ObjectSidebar";
 import { HistoryPanel } from "../../features/query-history/HistoryPanel";
 import { SavedQueriesPanel } from "../../features/saved-queries/SavedQueriesPanel";
 import type { DatabaseObjectSummary } from "../../generated/ipc-types";
-import { clearCompletionCache } from "../../features/query-editor/sqlCompletion";
+import { clearCompletionCache, findTable } from "../../features/query-editor/sqlCompletion";
 import {
   firstKeyword,
   splitStatements,
@@ -59,6 +60,12 @@ export function WorkspacePage() {
   const database = connections.find(([id]) => id === connectionId)?.[1].database;
   return <WorkspaceContent key={`${connectionId}:${database}`} connectionId={connectionId} />;
 }
+
+/** The Table Data tab a sidebar double-click opens; `split` seats it in a new panel. */
+const tableDataTab = (o: { oid: number; schema: string; name: string }, split = false): WorkspaceAction => ({
+  type: "TAB_ADDED", tabId: crypto.randomUUID(), title: o.name, split,
+  tableData: { relationOid: o.oid, schema: o.schema, name: o.name },
+});
 
 function WorkspaceContent({ connectionId }: { connectionId: string }) {
   const navigate = useNavigate();
@@ -236,7 +243,17 @@ function WorkspaceContent({ connectionId }: { connectionId: string }) {
       if (matches("splitPanel")) {
         e.preventDefault();
         e.stopPropagation();
-        if (!e.repeat) addQueryTab(true);
+        if (e.repeat) return;
+        // A table name selected in the focused editor opens that table in the new
+        // panel, as a sidebar double-click would; anything else splits as before.
+        const view = [...editorViews.current.values()].find((candidate) => candidate.hasFocus);
+        const { from, to } = view?.state.selection.main ?? { from: 0, to: 0 };
+        const selected = view && from !== to ? view.state.sliceDoc(from, to) : "";
+        if (!selected) { addQueryTab(true); return; }
+        void findTable(connectionId, openConnections.get(connectionId)?.database ?? "", selected).then((table) => {
+          if (table) dispatch(tableDataTab(table, true));
+          else addQueryTab(true);
+        });
         return;
       }
       if (matches("closeTab")) {
@@ -262,7 +279,12 @@ function WorkspaceContent({ connectionId }: { connectionId: string }) {
         // which drops every open connection along with it.
         e.preventDefault();
         e.stopPropagation();
-        if (!e.repeat && (e.target as Element | null)?.closest?.("[data-result-area]")) void refreshResultRef.current();
+        const area = (e.target as Element | null)?.closest?.("[data-result-area]");
+        if (!e.repeat && area) {
+          const refreshTable = area.querySelector<HTMLButtonElement>("[data-refresh-result]");
+          if (refreshTable) refreshTable.click();
+          else void refreshResultRef.current();
+        }
         return;
       }
       if (matches("previousPanel")) action = { type: "PANEL_CYCLED", direction: -1 };
@@ -289,7 +311,7 @@ function WorkspaceContent({ connectionId }: { connectionId: string }) {
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [dispatchAndFocusEditor, dispatch, changingDatabase, addQueryTab]);
+  }, [dispatchAndFocusEditor, dispatch, changingDatabase, addQueryTab, connectionId]);
 
   if (!profile) return null;
 
@@ -548,12 +570,7 @@ function WorkspaceContent({ connectionId }: { connectionId: string }) {
         title: `${o.schema}.${o.name}(${o.functionArguments ?? ""})` });
       return;
     }
-    dispatch({
-      type: "TAB_ADDED",
-      tabId: crypto.randomUUID(),
-      title: o.name,
-      tableData: { relationOid: o.oid, schema: o.schema, name: o.name },
-    });
+    dispatch(tableDataTab(o));
   };
 
   const isQueryTab = activeTab?.kind === "query";

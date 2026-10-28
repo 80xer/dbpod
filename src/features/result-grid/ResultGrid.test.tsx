@@ -5,7 +5,9 @@ import { ResultGrid } from "./ResultGrid";
 import { resultStore } from "../../entities/result/resultStore";
 import { editStore } from "../../entities/result/editStore";
 import { ipc } from "../../shared/ipc/invoke";
-import type { DbValue, ResultRowsFetchResponse } from "../../generated/ipc-types";
+import type { DbValue, ResultRowsFetchResponse, TableMetadata } from "../../generated/ipc-types";
+import { tableDataEditability } from "../data-editing/editability";
+import { buildRowChanges } from "../data-editing/saveChanges";
 vi.mock("@tanstack/react-virtual", () => ({ useVirtualizer: ({ count }: { count: number }) => ({ getTotalSize: () => count * 28, scrollToIndex: vi.fn(), getVirtualItems: () => Array.from({ length: count }, (_, index) => ({ index, key: index, start: index * 28, size: 28 })) }) }));
 vi.mock("../../shared/ipc/invoke", () => ({ ipc: { exportSave: vi.fn(), resultRowsFetch: vi.fn(), tableDataFetchPage: vi.fn() } }));
 beforeEach(() => {
@@ -72,6 +74,136 @@ test("paste inside an editor stays native; grid paste preserves quoted markers a
   fireEvent.paste(grid, { clipboardData: { getData: () => "extra\tcolumn" } });
   expect(editStore.getSnapshot("grid").inserts).toHaveLength(1);
   expect(screen.getByRole("alert").textContent).toContain("열 수");
+});
+
+test("copies a rectangle to another result at the selected cell without inserting rows", async () => {
+  const source = screen.getByRole("grid");
+  fireEvent.mouseDown(within(source).getByRole("gridcell", { name: "1" }));
+  fireEvent.mouseEnter(within(source).getByText("Beta"), { buttons: 1 });
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+  await act(async () => { fireEvent.keyDown(source, { key: "c", ctrlKey: true }); });
+  expect(writeText).toHaveBeenCalledWith("1\tAlpha\n2\tBeta");
+
+  resultStore.create("target");
+  resultStore.setColumns("target", ["untouched", "id", "name"].map((name, index) => ({
+    ...resultStore.getSnapshot("grid").columns[0], name, index,
+  })));
+  const original: DbValue[][] = [0, 1, 2].map((r) => ["keep", `old-id-${r}`, `old-name-${r}`].map((value) => ({ kind: "text", value })));
+  resultStore.pushRows("target", original);
+  resultStore.setTerminal("target", { status: "completed" });
+  render(<ResultGrid resultTabId="target" edit={{ editableColumns: new Set(["id", "name"]) }} />);
+  const target = screen.getAllByRole("grid")[1];
+  fireEvent.mouseDown(within(target).getByText("old-id-1"));
+  fireEvent.paste(target, { clipboardData: { getData: () => writeText.mock.calls[0][0] } });
+  expect(editStore.getSnapshot("target").inserts).toHaveLength(0);
+  expect(editStore.getSnapshot("target").updates).toEqual(new Map([
+    [1, new Map([["id", { value: "1" }], ["name", { value: "Alpha" }]])],
+    [2, new Map([["id", { value: "2" }], ["name", { value: "Beta" }]])],
+  ]));
+  expect(resultStore.getSnapshot("target").rows).toEqual(original);
+  expect(within(target).getByText("Alpha")).toBeTruthy();
+  expect(editStore.getSnapshot("grid").pendingCount).toBe(0);
+  cleanup();
+  resultStore.dispose("target");
+});
+
+test.each([
+  ["Alpha", "changed\nsecond\nextra"],
+  ["Alpha", "changed\textra"],
+  ["1", "changed\tsecond"],
+  ["Alpha", "changed\nDEFAULT"],
+])("rejects an invalid selected paste atomically: %s / %s", (cell, text) => {
+  fireEvent.mouseDown(screen.getByRole("gridcell", { name: cell }));
+  fireEvent.paste(screen.getByRole("grid"), { clipboardData: { getData: () => text } });
+  expect(screen.getByRole("alert")).toBeTruthy();
+  expect(editStore.getSnapshot("grid").pendingCount).toBe(0);
+});
+
+test("selected paste distinguishes SQL NULL, literal markers and unchanged values", () => {
+  const grid = screen.getByRole("grid");
+  fireEvent.mouseDown(screen.getByText("Alpha"));
+  fireEvent.paste(grid, { clipboardData: { getData: () => 'NULL\n"DEFAULT"' } });
+  expect(editStore.getSnapshot("grid").updates.get(0)?.get("name")).toEqual({ value: null });
+  expect(editStore.getSnapshot("grid").updates.get(1)?.get("name")).toEqual({ value: "DEFAULT" });
+  fireEvent.paste(grid, { clipboardData: { getData: () => "Alpha\nBeta" } });
+  expect(editStore.getSnapshot("grid").pendingCount).toBe(0);
+  act(() => { resultStore.replaceRow("grid", 0, [{ kind: "text", value: "1" }, { kind: "null" }]); });
+  fireEvent.mouseDown(screen.getByRole("gridcell", { name: "NULL" }));
+  fireEvent.paste(grid, { clipboardData: { getData: () => '"NULL"' } });
+  expect(editStore.getSnapshot("grid").updates.get(0)?.get("name")).toEqual({ value: "NULL" });
+});
+
+test("pastes into an explicitly added row without adding another insert", () => {
+  fireEvent.click(screen.getByRole("button", { name: /행 추가/ }));
+  const grid = screen.getByRole("grid");
+  fireEvent.mouseDown(grid.querySelector('[data-cell="2:1"]')!);
+  fireEvent.paste(grid, { clipboardData: { getData: () => "new name" } });
+  expect(editStore.getSnapshot("grid").inserts).toHaveLength(1);
+  expect(editStore.getSnapshot("grid").inserts[0].cells.name).toEqual({ mode: "value", value: "new name" });
+  expect(editStore.getSnapshot("grid").updates.size).toBe(0);
+});
+
+test("selected paste respects save locks and deleted rows", () => {
+  const grid = screen.getByRole("grid");
+  fireEvent.mouseDown(screen.getByText("Alpha"));
+  const paste = () => fireEvent.paste(grid, { clipboardData: { getData: () => "changed\nsecond" } });
+  act(() => { editStore.setLocked("grid", true); });
+  paste();
+  expect(editStore.getSnapshot("grid").pendingCount).toBe(0);
+  act(() => { editStore.setLocked("grid", false); editStore.toggleDelete("grid", 1); });
+  paste();
+  expect(screen.getByRole("alert").textContent).toContain("삭제");
+  expect(editStore.getSnapshot("grid").updates.size).toBe(0);
+  expect(editStore.getSnapshot("grid").inserts).toHaveLength(0);
+});
+
+test("copies all menu cells including text[] to another editable result and builds updates", async () => {
+  cleanup();
+  const meta: TableMetadata = { relationOid: 42, schema: "adm", name: "menus", kind: "table", primaryKey: [1], uniqueKeys: [], rowLevelSecurity: false,
+    columns: [
+      { attributeNumber: 1, name: "id", pgTypeOid: 20, pgTypeName: "bigint", nullable: false, defaultExpr: null, comment: null, isGenerated: false, isPrimaryKey: true },
+      { attributeNumber: 2, name: "api_prefixes", pgTypeOid: 1009, pgTypeName: "text[]", nullable: false, defaultExpr: "'{}'::text[]", comment: null, isGenerated: false, isPrimaryKey: false },
+    ] };
+  const cols = [
+    { index: 0, name: "__dbpod_xmin", pgTypeOid: 25, pgTypeName: "text", category: "text" as const, source: null, nullable: null, editable: false },
+    ...meta.columns.map((c, index) => ({ index: index + 1, name: c.name, pgTypeOid: c.pgTypeOid, pgTypeName: c.pgTypeName,
+      category: index === 0 ? "integer" as const : "array" as const, source: { relationOid: 42, attributeNumber: c.attributeNumber }, nullable: false, editable: false })),
+  ];
+  const values: DbValue[] = [{ kind: "text", value: "/narrative-args" }, { kind: "text", value: "a,b" }, { kind: "text", value: "NULL" }, { kind: "null" }, { kind: "text", value: 'a"b\\c' }];
+  const array: DbValue = { kind: "array", elementTypeOid: 25, dimensions: [{ lowerBound: 1, length: values.length }], values };
+  const empty: DbValue = { kind: "array", elementTypeOid: 25, dimensions: [{ lowerBound: 1, length: 0 }], values: [] };
+  const info = tableDataEditability(cols, meta, false);
+  expect(info.editable).toBe(true);
+  if (!info.editable) throw new Error("menus must be editable");
+  for (const id of ["menu-source", "menu-target"]) {
+    resultStore.create(id);
+    resultStore.setColumns(id, cols);
+    resultStore.pushRows(id, [array, empty].map((v, r) => [{ kind: "text", value: "11" }, { kind: "integer", value: String(r + 1) }, id === "menu-source" ? v : empty]));
+    resultStore.setTerminal(id, { status: "completed" });
+    render(<ResultGrid resultTabId={id} hiddenColumns={["__dbpod_xmin"]} edit={info} />);
+  }
+  const [source, target] = screen.getAllByRole("grid");
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+  fireEvent.keyDown(source, { key: "a", code: "KeyA", metaKey: true });
+  await act(async () => { fireEvent.keyDown(source, { key: "c", ctrlKey: true }); });
+  fireEvent.mouseDown(within(target).getByRole("gridcell", { name: "1" }));
+  fireEvent.paste(target, { clipboardData: { getData: () => writeText.mock.calls[0][0] } });
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(editStore.getSnapshot("menu-target").inserts).toHaveLength(0);
+  const changes = buildRowChanges(info, resultStore.getSnapshot("menu-target"), editStore.getSnapshot("menu-target"));
+  expect(changes).toHaveLength(1);
+  expect(changes[0]).toMatchObject({ operation: "update", changes: {
+    api_prefixes: { kind: "text", value: String.raw`{"/narrative-args","a,b","NULL",NULL,"a\"b\\c"}` },
+  } });
+  // Enter without typing must not turn ambiguous array display text into an edit.
+  fireEvent.mouseDown(within(source).getAllByRole("gridcell")[1]);
+  fireEvent.keyDown(source, { key: "Enter" });
+  fireEvent.keyDown(screen.getByLabelText("셀 편집"), { key: "Enter" });
+  expect(editStore.getSnapshot("menu-source").pendingCount).toBe(0);
+  cleanup();
+  for (const id of ["menu-source", "menu-target"]) resultStore.dispose(id);
 });
 
 test("row headers and Shift+Space select full rows; deletion requires the separate action", async () => {

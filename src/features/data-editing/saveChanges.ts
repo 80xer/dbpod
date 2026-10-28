@@ -3,6 +3,7 @@ import type { EditSnapshot } from "../../entities/result/editStore";
 import { editStore } from "../../entities/result/editStore";
 import type { ResultSnapshot } from "../../entities/result/resultStore";
 import { resultStore } from "../../entities/result/resultStore";
+import { exportText } from "../../entities/result/valueText";
 import type {
   ChangesCommitEvent,
   DbValue,
@@ -57,7 +58,8 @@ export function buildRowChanges(
       const catalog = info.catalogName[col.name];
       if (!catalog) continue;
       const v = row[col.index];
-      if (v && v.kind !== "binary" && v.kind !== "array") out[catalog] = v;
+      if (v?.kind === "array" && col.pgTypeOid === 1009) out[catalog] = { kind: "text", value: exportText(v) };
+      else if (v && v.kind !== "binary" && v.kind !== "array") out[catalog] = v;
     }
     return out;
   };
@@ -99,7 +101,7 @@ export function buildRowChanges(
 export type CommitOutcome =
   | { type: "completed"; rowCount: number }
   | { type: "conflict"; conflicts: RowConflict[] }
-  | { type: "failed"; message: string };
+  | { type: "failed"; message: string; sqlState?: string | null };
 
 /** Streams the commit and applies authoritative server values to the grid. */
 export async function commitChangeSet(
@@ -131,6 +133,7 @@ export async function commitChangeSet(
           resolve({
             type: "failed",
             message: `${event.error.message}${event.error.sqlState ? ` (SQLSTATE ${event.error.sqlState})` : ""}`,
+            sqlState: event.error.sqlState,
           });
           break;
       }

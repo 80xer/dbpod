@@ -1,7 +1,7 @@
 # DBPod Result Grid 명세
 
 - 상태: MVP 기준선
-- 최종 수정일: 2026-07-27
+- 최종 수정일: 2026-10-16
 
 ## 1. 목적
 
@@ -168,6 +168,9 @@ Header 기능:
 | Delete | 선택 row 삭제 draft, 확인 필요 |
 | Cmd/Ctrl+C | TSV copy |
 | Cmd/Ctrl+V | paste preview 또는 cell paste |
+| Cmd/Ctrl+R | 포커스된 결과 다시 조회. Table Data는 현재 정렬로 첫 페이지부터, Query Result는 해당 결과의 실행 SQL을 재실행 |
+
+새로 조회하기 전에 저장되지 않은 편집(확정 전 셀 입력 포함)이 있으면 기존 확인 창으로 변경 폐기 여부를 묻는다. 취소하면 조회하지 않고 편집을 유지한다. 저장 검증·커밋 또는 조회 중에는 중복 조회하지 않는다. 이 단축키는 WebView 자체를 새로고침하지 않는다.
 
 CodeMirror가 focus를 가진 상태에서는 Grid 단축키가 실행되지 않는다.
 
@@ -241,7 +244,19 @@ SQL INSERT copy는 안전한 export일 뿐 자동 실행하지 않는다.
 - existing rows에 mapping된 값은 UPDATE draft가 된다.
 - blank insert rows로 넘어간 값은 INSERT draft가 된다.
 
+현재 MVP의 직접 붙여넣기는 다음 규칙을 적용한다.
+
+- 선택된 셀(범위 선택 시 focus 셀)을 시작점으로 TSV 크기만큼 오른쪽·아래로 매핑한다. 다른 Result Tab에서 복사한 범위도 동일하게 적용한다.
+- 기존 행은 UPDATE draft, 사용자가 이미 추가한 새 행은 해당 INSERT draft를 변경한다. 선택된 셀에 붙여넣다가 행이 부족해도 새 행을 자동 생성하지 않는다.
+- 행·열 범위 초과, 읽기 전용·binary 셀, 삭제 대기 행 또는 기존 행의 `DEFAULT`가 포함되면 전체 붙여넣기를 거부하고 오류를 표시한다. 일부 셀만 변경하지 않는다.
+- 선택이 없는 경우에는 기존 새 행 붙여넣기를 유지한다. 편집 가능한 열 순서로 INSERT draft를 생성한다.
+- 셀 편집 중에는 입력 필드의 기본 붙여넣기를 사용한다. 저장 검증 중에는 그리드 붙여넣기를 차단한다.
+- 붙여넣기는 편집 버퍼에만 반영하며 DB 반영에는 별도 저장이 필요하다.
+- `text[]` 열도 전체 선택 복사·붙여넣기의 대상이다. 배열은 PostgreSQL text 문법으로 매핑하며 원소의 NULL·빈 문자열과 escaping을 보존한다. 다른 배열 타입의 편집 제한은 유지한다.
+
 ### 11.3 Import Preview
+
+아래 Preview는 목표 동작이다. 현재 MVP의 직접 붙여넣기는 위의 전체 범위 검증과 오류 표시를 사용하며 별도 Preview UI는 제공하지 않는다.
 
 다음 경우 항상 Preview를 연다.
 

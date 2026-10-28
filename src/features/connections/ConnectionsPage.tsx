@@ -92,6 +92,7 @@ export function ConnectionsPage() {
   const [passwordProfile, setPasswordProfile] = useState<ConnectionProfile | null>(null);
   const passwordDialog = useRef<HTMLDialogElement>(null);
   const passwordInput = useRef<HTMLInputElement>(null);
+  const nameInput = useRef<HTMLInputElement>(null);
   useEffect(() => {
     if (passwordProfile) {
       passwordDialog.current?.showModal();
@@ -312,6 +313,8 @@ export function ConnectionsPage() {
                     }, { keepDefaultValues: true });
                     setTestResult(null);
                     setMessage("");
+                    // The form sits above or beside a long list; focusing scrolls it into view.
+                    nameInput.current?.focus();
                   }}
                 >
                   편집
@@ -348,6 +351,7 @@ export function ConnectionsPage() {
                 <label className={labelCls} htmlFor="f-name">이름</label>
                 <input
                   id="f-name"
+                  ref={nameInput}
                   className={inputCls}
                   value={f.state.value}
                   onChange={(e) => f.handleChange(e.target.value)}

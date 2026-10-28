@@ -22,6 +22,8 @@ export type Editability = { editable: false; reason: string } | EditableInfo;
 const BLOCKED =
   /\b(JOIN|GROUP\s+BY|HAVING|DISTINCT|UNION|INTERSECT|EXCEPT|OVER|INTO|RETURNING)\b|^\s*WITH\b|\(\s*(SELECT|TABLE|WITH|VALUES)\b/i;
 const UNSUPPORTED = new Set(["array", "binary", "range", "composite", "unknown"]);
+// text[] is edited as PostgreSQL array text, with the same lossless format as copy/export.
+const unsupportedColumn = (c: ColumnMeta) => UNSUPPORTED.has(c.category) && !(c.category === "array" && c.pgTypeOid === 1009);
 const unsafeName = (name: string) =>
   !name || name === "prototype" || Object.prototype.hasOwnProperty.call(Object.prototype, name);
 
@@ -67,7 +69,7 @@ function analyzeColumns(
       return { editable: false, reason: "동일한 원본 컬럼이 중복 표시되어 편집할 수 없습니다" };
     seen.add(c.source.attributeNumber);
     // Displayed-value locking needs values that the decoder and equality operator support.
-    if (xminColumnIndex === undefined && (UNSUPPORTED.has(c.category) || c.pgTypeOid === 114 || c.pgTypeOid === 142))
+    if (xminColumnIndex === undefined && (unsupportedColumn(c) || c.pgTypeOid === 114 || c.pgTypeOid === 142))
       return { editable: false, reason: "표시된 값으로 안전한 충돌 검사를 지원하지 않는 타입이 포함되어 있습니다" };
   }
 
@@ -99,7 +101,7 @@ function analyzeColumns(
     const catalog = catalogByAttnum.get(c.source.attributeNumber);
     if (!catalog) continue;
     catalogName[c.name] = catalog.name;
-    if (!catalog.isGenerated && !UNSUPPORTED.has(c.category)) editableColumns.add(c.name);
+    if (!catalog.isGenerated && !unsupportedColumn(c)) editableColumns.add(c.name);
   }
 
   return {

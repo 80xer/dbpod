@@ -38,6 +38,20 @@ beforeEach(() => {
   vi.mocked(ipc.metadataGetTable).mockReset().mockResolvedValue(meta);
 });
 
+it("allows text[] columns in Table Data and plain query results, but keeps other arrays blocked", async () => {
+  for (const oid of [1009, 1007]) {
+    const arrayMeta: TableMetadata = { ...meta, columns: [meta.columns[0], { ...meta.columns[1], pgTypeOid: oid, pgTypeName: oid === 1009 ? "text[]" : "integer[]" }] };
+    const arrayColumns: ColumnMeta[] = [columns[0], { ...columns[1], pgTypeOid: oid, category: "array" }];
+    vi.mocked(ipc.metadataGetTable).mockResolvedValue(arrayMeta);
+    const query = await detect(undefined, arrayColumns);
+    expect(query.editable).toBe(oid === 1009);
+    const table = tableDataEditability([xmin, ...arrayColumns.map((c) => ({ ...c, index: c.index + 1 }))], arrayMeta, false);
+    expect(table.editable).toBe(true);
+    if (table.editable) expect(table.editableColumns.has("name")).toBe(oid === 1009);
+    if (query.editable) expect(query.editableColumns.has("name")).toBe(true);
+  }
+});
+
 describe("query editability", () => {
   it.each([
     "SELECT id, name FROM people",

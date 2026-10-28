@@ -1,4 +1,5 @@
 import type { DbValue } from "../../generated/ipc-types";
+import { exportText } from "../../entities/result/valueText";
 
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -18,7 +19,7 @@ export function cellText(v: DbValue | undefined): string {
         ? `<binary ${formatBytes(v.byteLength)}>`
         : `<binary ${formatBytes(v.byteLength)} base64:${v.value.slice(0, 24)}…>`;
     case "array":
-      return `{${v.values.map(cellText).join(",")}}`;
+      return v.elementTypeOid === 25 ? exportText(v) : `{${v.values.map(cellText).join(",")}}`;
     default:
       return v.value;
   }

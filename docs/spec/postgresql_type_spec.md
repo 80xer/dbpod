@@ -205,6 +205,7 @@ NUL 또는 invalid server encoding 문제는 decode error로 표시하고 binary
 - values는 row-major flat array로 전달한다.
 - array `NULL` element와 empty string을 구분한다.
 - Grid 기본 표시는 PostgreSQL array text와 유사한 compact form이다.
+- `text[]`는 복사와 같은 PostgreSQL 배열 text를 표시·편집 초기값으로 사용하며, bind parameter와 catalog 타입 cast로 저장한다. 다른 배열 타입의 편집과 배열 PK 편집은 현재 MVP에서 지원하지 않는다.
 - Quick View에서 tree/table 형태를 제공한다.
 - 알려지지 않은 element type은 array 전체 text fallback을 사용할 수 있다.
 

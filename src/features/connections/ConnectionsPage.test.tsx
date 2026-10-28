@@ -141,6 +141,7 @@ describe("ConnectionsPage", () => {
     mount();
     fireEvent.click(await screen.findByRole("button", { name: "편집" }));
     expect((screen.getByLabelText("포트") as HTMLInputElement).value).toBe("5433");
+    expect(document.activeElement).toBe(screen.getByLabelText("이름"));
     fireEvent.change(screen.getByLabelText("이름"), { target: { value: "Renamed" } });
     fireEvent.click(screen.getByRole("button", { name: "저장" }));
     const { hasStoredCredential: _, ...draft } = profile;

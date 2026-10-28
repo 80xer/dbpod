@@ -14,6 +14,7 @@ import { savedQueryStore } from "../../entities/query/savedQueryStore";
 import type { ConnectionProfile, ExecutionAccepted, QueryStreamEvent } from "../../generated/ipc-types";
 import { ipc } from "../../shared/ipc/invoke";
 import { restoreWorkspace, saveWorkspaceNow } from "../../entities/workspace/persistence";
+import { clearCompletionCache } from "../../features/query-editor/sqlCompletion";
 import { router } from "../router";
 
 // Stands in for the edit bar's save button, which the save key presses.
@@ -23,7 +24,7 @@ vi.mock("../../shared/ipc/invoke", () => ({ ipc: {
   queryExecute: vi.fn(), queryCancel: vi.fn(), tableDataExecute: vi.fn(), queryAckChunk: vi.fn(), metadataGetTable: vi.fn(),
   resultRelease: vi.fn(), querySessionClose: vi.fn(), connectionClose: vi.fn(),
   connectionSwitchDatabase: vi.fn(), connectionReconnect: vi.fn(), metadataListDatabases: vi.fn(), metadataGetRoutineDefinition: vi.fn(), metadataGetViewDefinition: vi.fn(),
-  metadataListIndexes: vi.fn(), metadataGetTableDdl: vi.fn(),
+  metadataListIndexes: vi.fn(), metadataGetTableDdl: vi.fn(), metadataListSchemas: vi.fn(), metadataListObjects: vi.fn(),
 } }));
 vi.mock("../../entities/workspace/persistence", () => ({
   restoreWorkspace: vi.fn(), saveWorkspaceSoon: vi.fn(), saveWorkspaceNow: vi.fn(), preloadSnapshot: vi.fn(),
@@ -64,6 +65,7 @@ vi.mock("../../features/query-editor/SqlEditor", async () => {
       };
       onViewReady?.({
         focus: () => input.current?.focus(),
+        get hasFocus() { return document.activeElement === input.current; },
         dispatch: ({ selection }: { selection?: { anchor: number; head: number } }) => {
           if (!selection) return;
           caret.current = selection;
@@ -208,6 +210,47 @@ it.each(["새연결 화면", "연결 추가", "Cmd+N"])("opens connections via %
   expect(ipc.connectionClose).not.toHaveBeenCalled();
   expect(ipc.querySessionClose).not.toHaveBeenCalled();
   expect(ipc.resultRelease).not.toHaveBeenCalled();
+});
+
+it("opens the table named by the editor selection in a new panel on the split key, and splits as usual otherwise", async () => {
+  clearCompletionCache("A");
+  vi.mocked(ipc.metadataListSchemas).mockResolvedValue([{ oid: 1, name: "public", isSystem: false }, { oid: 2, name: "sales", isSystem: false }]);
+  vi.mocked(ipc.metadataListObjects).mockResolvedValue([
+    { oid: 100, schema: "public", name: "alpha", kind: "table", partitionParentOid: null, canSelect: true, canInsert: true, canUpdate: true, canDelete: true },
+    { oid: 400, schema: "sales", name: "Orders", kind: "view", partitionParentOid: null, canSelect: true, canInsert: null, canUpdate: null, canDelete: null },
+  ]);
+  await mountWorkspace();
+  const left = editor();
+  const select = (sql: string, text: string) => {
+    fireEvent.change(left, { target: { value: sql } });
+    left.setSelectionRange(sql.indexOf(text), sql.indexOf(text) + text.length);
+    fireEvent.select(left);
+  };
+  const splitKey = () => act(async () => { fireEvent.keyDown(left, { key: "d", code: "KeyD", metaKey: true }); });
+  await act(async () => { left.focus(); });
+
+  select("SELECT * FROM Public.ALPHA", "Public.ALPHA");
+  await splitKey();
+  await waitFor(() => expect(workspaceStates.get("A")!.tabs).toHaveLength(2));
+  const [, alpha] = workspaceStates.get("A")!.tabs;
+  expect(alpha).toMatchObject({ kind: "table-data", title: "alpha", tableData: { relationOid: 100, schema: "public", name: "alpha" } });
+  expect(getTabGroups(workspaceStates.get("A")!).map((group) => group.tabIds)).toEqual([["A-tab"], [alpha.id]]);
+  expect(ipc.metadataListObjects).toHaveBeenCalledWith(expect.objectContaining({ connectionId: "A", schemaOids: [1, 2] }));
+
+  // A quoted name keeps its case; the catalog is fetched once per connection.
+  await act(async () => { left.focus(); });
+  select('SELECT * FROM "Orders"', '"Orders"');
+  await splitKey();
+  await waitFor(() => expect(workspaceStates.get("A")!.tabs).toHaveLength(3));
+  expect(workspaceStates.get("A")!.tabs[2]).toMatchObject({ kind: "table-data", tableData: { relationOid: 400, schema: "sales", name: "Orders" } });
+  expect(ipc.metadataListObjects).toHaveBeenCalledTimes(1);
+
+  // Anything that is not a known table name splits into an empty query tab as before.
+  await act(async () => { left.focus(); });
+  select("SELECT * FROM nowhere", "SELECT * FROM nowhere");
+  await splitKey();
+  await waitFor(() => expect(workspaceStates.get("A")!.tabs).toHaveLength(4));
+  expect(workspaceStates.get("A")!.tabs[3].kind).toBe("query");
 });
 
 it("splits beside the current editor, runs each pane independently and preserves work across HOME and pane closure", async () => {
@@ -681,6 +724,46 @@ it("opens a Table Data tab as one scrollable result without page buttons", async
   expect(ipc.tableDataExecute).toHaveBeenCalledTimes(2);
   expect(vi.mocked(ipc.tableDataExecute).mock.calls[1][0].offset).toBe(0);
   expect(tableDataViews.get(alphaTabId)).toEqual({ sortAttribute: null, sortDescending: false });
+});
+
+it("refreshes Table Data with Cmd+R and confirms before discarding pending or in-progress cell edits", async () => {
+  stubDialogs();
+  await mountWorkspace();
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Open alpha" })); });
+  const tableTabId = workspaceStates.get("A")!.activeTabId!;
+  const resultTabId = `${tableTabId}:data`;
+  const refreshButton = screen.getByRole("button", { name: "새로고침" });
+  const refresh = (target: Element = refreshButton) => {
+    const event = new KeyboardEvent("keydown", { key: "r", code: "KeyR", metaKey: true, bubbles: true, cancelable: true });
+    fireEvent(target, event);
+    expect(event.defaultPrevented).toBe(true);
+  };
+  await act(async () => { refresh(); });
+  expect(ipc.tableDataExecute).toHaveBeenCalledTimes(2);
+  expect(ipc.tableDataExecute).toHaveBeenLastCalledWith(expect.objectContaining({ resultTabId, relationOid: 100, offset: 0 }), expect.anything());
+  act(() => { editStore.setCell(resultTabId, 0, "name", { value: "unsaved" }); });
+  await act(async () => { refresh(); });
+  await answerConfirm("취소");
+  expect(ipc.tableDataExecute).toHaveBeenCalledTimes(2);
+  expect(editStore.getSnapshot(resultTabId).pendingCount).toBe(1);
+  await act(async () => { refresh(); });
+  await answerConfirm("확인");
+  expect(ipc.tableDataExecute).toHaveBeenCalledTimes(3);
+  expect(editStore.getSnapshot(resultTabId).pendingCount).toBe(0);
+
+  // A cell still being typed into has not reached the edit store yet.
+  const cellEditor = document.createElement("input");
+  cellEditor.setAttribute("aria-label", "셀 편집");
+  refreshButton.closest("[data-result-area]")!.append(cellEditor);
+  await act(async () => { refresh(cellEditor); });
+  await answerConfirm("취소");
+  expect(ipc.tableDataExecute).toHaveBeenCalledTimes(3);
+  cellEditor.remove();
+
+  act(() => { editStore.setLocked(resultTabId, true); });
+  await act(async () => { refresh(); });
+  expect(ipc.tableDataExecute).toHaveBeenCalledTimes(3);
+  act(() => { editStore.setLocked(resultTabId, false); });
 });
 
 it("saves the active query by shortcut: names it once, then overwrites it silently", async () => {

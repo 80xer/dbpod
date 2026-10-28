@@ -1,7 +1,7 @@
 import { beforeEach, expect, test, vi } from "vitest";
 import { editStore } from "../../entities/result/editStore";
 import { resultStore } from "../../entities/result/resultStore";
-import type { ColumnMeta, TableMetadata } from "../../generated/ipc-types";
+import type { ColumnMeta, DbValue, TableMetadata } from "../../generated/ipc-types";
 import { tableDataEditability } from "./editability";
 import { applyServerValues, buildRowChanges, commitChangeSet } from "./saveChanges";
 import { ipc } from "../../shared/ipc/invoke";
@@ -31,6 +31,18 @@ test("dirty result cannot be replaced and delete uses its original displayed val
   expect(() => resultStore.create("result")).toThrow();
   const changes = buildRowChanges({ ...editable, lockMode: "displayed", xminColumnIndex: undefined }, resultStore.getSnapshot("result"), editStore.getSnapshot("result"));
   expect(changes[0]).toMatchObject({ operation: "delete", identity: { primaryKey: [{ value: { kind: "integer", value: "1" } }] }, originalValues: { name: { kind: "text", value: "old" } } });
+});
+
+test("keeps text[] originals in displayed-value conflict checks as bound PostgreSQL text", () => {
+  const array: DbValue = { kind: "array", elementTypeOid: 25, dimensions: [{ lowerBound: 1, length: 5 }],
+    values: [{ kind: "text", value: "a,b" }, { kind: "text", value: "NULL" }, { kind: "null" }, { kind: "text", value: "" }, { kind: "text", value: 'a"b\\c' }] };
+  resultStore.setColumns("result", columns.map((c) => c.name === "name" ? { ...c, category: "array", pgTypeOid: 1009, pgTypeName: "text[]" } : c));
+  resultStore.replaceRow("result", 0, [{ kind: "text", value: "11" }, { kind: "integer", value: "1" }, array]);
+  editStore.setCell("result", 0, "name", { value: "{}" });
+  const changes = buildRowChanges({ ...editable, lockMode: "displayed", xminColumnIndex: undefined }, resultStore.getSnapshot("result"), editStore.getSnapshot("result"));
+  expect(changes[0]).toMatchObject({ operation: "update", originalValues: {
+    name: { kind: "text", value: String.raw`{"a,b","NULL",NULL,"","a\"b\\c"}` },
+  }, changes: { name: { kind: "text", value: "{}" } } });
 });
 
 test("server conflict clears deletes, advances xmin, and rebases other drafts together", () => {

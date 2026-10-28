@@ -1042,6 +1042,108 @@ mod editing {
     }
 
     #[tokio::test]
+    async fn text_array_paste_preserves_elements_and_conflict_checks() {
+        let (_node, state) = setup().await;
+        let meta = fixture(&state).await;
+        let events = exec_sql(
+            &state,
+            "ALTER TABLE public.edit_target ADD COLUMN api_prefixes text[] NOT NULL DEFAULT '{}'::text[]",
+        ).await;
+        assert!(matches!(
+            events.last().unwrap(),
+            QueryStreamEvent::Completed { .. }
+        ));
+        let literal =
+            r#"{"/narrative-args","a,b","NULL",NULL,"","a\"b\\c","'; DROP TABLE edit_target; --"}"#;
+        for id in [1, 2] {
+            let (_, _, _, xmin) = read_row(&state, id).await.unwrap();
+            let preview = edit_service::preview(
+                &state,
+                &ChangesPreviewRequest {
+                    connection_id: CONN_ID.into(),
+                    result_tab_id: "t-edit-result".into(),
+                    relation_oid: meta.relation_oid,
+                    changes: vec![RowChange::Update {
+                        row_id: format!("u:{id}"),
+                        identity: identity(&meta, id, if id == 1 { Some(xmin) } else { None }),
+                        original_values: HashMap::from([("api_prefixes".into(), text("{}"))]),
+                        changes: HashMap::from([("api_prefixes".into(), text(literal))]),
+                    }],
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(preview.counts.update, 1);
+            assert_eq!(preview.counts.insert, 0);
+            assert!(preview.statements[0].sql_template.contains("::text[]"));
+            assert!(!preview.statements[0].sql_template.contains("DROP TABLE"));
+            let (sink, rx) = commit_events();
+            edit_service::commit(
+                &state,
+                &ChangesCommitRequest {
+                    change_set_id: preview.change_set_id,
+                },
+                sink,
+            )
+            .await
+            .unwrap();
+            let events = drain(rx).await;
+            let rows = match events.last().unwrap() {
+                ChangesCommitEvent::Completed { rows } => rows,
+                other => panic!("expected completed, got {other:?}"),
+            };
+            let values = match &rows[0].values["api_prefixes"] {
+                DbValue::Array { values, .. } => values,
+                other => panic!("expected array, got {other:?}"),
+            };
+            let expected = vec![
+                text("/narrative-args"),
+                text("a,b"),
+                text("NULL"),
+                DbValue::Null,
+                text(""),
+                text("a\"b\\c"),
+                text("'; DROP TABLE edit_target; --"),
+            ];
+            assert_eq!(
+                serde_json::to_value(values).unwrap(),
+                serde_json::to_value(expected).unwrap()
+            );
+        }
+        // A query result that still displays the old array cannot overwrite a newer value.
+        let preview = edit_service::preview(
+            &state,
+            &ChangesPreviewRequest {
+                connection_id: CONN_ID.into(),
+                result_tab_id: "t-edit-result".into(),
+                relation_oid: meta.relation_oid,
+                changes: vec![RowChange::Update {
+                    row_id: "stale".into(),
+                    identity: identity(&meta, 2, None),
+                    original_values: HashMap::from([("api_prefixes".into(), text("{}"))]),
+                    changes: HashMap::from([("api_prefixes".into(), text("{}"))]),
+                }],
+            },
+        )
+        .await
+        .unwrap();
+        let (sink, rx) = commit_events();
+        edit_service::commit(
+            &state,
+            &ChangesCommitRequest {
+                change_set_id: preview.change_set_id,
+            },
+            sink,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            drain(rx).await.last().unwrap(),
+            ChangesCommitEvent::Conflict { .. }
+        ));
+    }
+
+    #[tokio::test]
     async fn update_with_xmin_succeeds_and_returns_server_values() {
         let (_node, state) = setup().await;
         let meta = fixture(&state).await;

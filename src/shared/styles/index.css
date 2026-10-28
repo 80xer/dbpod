@@ -71,6 +71,17 @@ html[data-theme="dark"] .text-gray-600 { color: #d1d5db; }
 html[data-theme="dark"] .text-gray-500 { color: #9ca3af; }
 html[data-theme="dark"] .text-gray-400 { color: #9ca3af; }
 html[data-theme="dark"] .text-gray-300 { color: #6b7280; }
+
+/* Selected cells need their own foreground, including muted NULL and DEFAULT values. */
+[role="gridcell"][aria-selected="true"] {
+  background-color: #bfdbfe;
+  color: #111827;
+}
+html[data-theme="dark"] [role="gridcell"][aria-selected="true"] {
+  background-color: #1e3a8a;
+  color: #f3f4f6;
+}
+
 html[data-theme="dark"] .border-gray-100,
 html[data-theme="dark"] .border-gray-200 { border-color: #374151; }
 html[data-theme="dark"] .border-gray-300 { border-color: #4b5563; }

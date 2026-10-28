@@ -3,7 +3,7 @@ import { ipc } from "../../shared/ipc/invoke";
 import { fuzzyResult } from "./fuzzyMatch";
 import { statementAt, stripLiterals } from "./statementSplitter";
 
-type Catalog = { schema: string; name: string; oid: number; kind: string };
+export type Catalog = { schema: string; name: string; oid: number; kind: string };
 const catalogCache = new Map<string, Promise<Catalog[]>>();
 const columnsCache = new Map<string, Promise<string[]>>();
 type Words = { lower: Completion[]; upper: Completion[] };
@@ -32,6 +32,20 @@ async function catalog(connectionId: string, database: string): Promise<Catalog[
     catalogCache.set(key, pending);
   }
   return pending;
+}
+
+/**
+ * The table, view or materialized view that a selected `schema.name` or `name`
+ * names, quoted or not. An unquoted part folds to lower case as PostgreSQL does,
+ * and a bare name prefers `public`, the schema search_path reaches by default.
+ */
+export async function findTable(connectionId: string, database: string, text: string): Promise<Catalog | null> {
+  const match = /^\s*(?:("?[\w$]+"?)\s*\.\s*)?("?[\w$]+"?)\s*$/.exec(text);
+  if (!match) return null;
+  const ident = (part: string) => part.startsWith('"') ? unquote(part) : part.toLowerCase();
+  const items = (await catalog(connectionId, database))
+    .filter((item) => item.name === ident(match[2]) && (!match[1] || item.schema === ident(match[1])));
+  return items.find((item) => item.schema === "public") ?? items[0] ?? null;
 }
 
 /**

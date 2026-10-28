@@ -99,18 +99,18 @@ function CellEditor({
         aria-label="SQL NULL로 설정"
         onMouseDown={(e) => e.preventDefault()}
         onClick={() => commit({ mode: "null" })}
-        className="shrink-0 rounded border border-gray-300 px-1 text-[10px] text-gray-500 hover:bg-gray-100"
+        className="inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded border border-gray-500 bg-gray-100 px-1 text-xs font-semibold not-italic text-gray-900 hover:bg-gray-200 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-blue-500"
       >
         ∅
       </button>
       {allowDefault && (
         <button
           type="button"
-          title="DEFAULT 사용"
+          title="DEFAULT 사용 — DB 기본값으로 설정"
           aria-label="DEFAULT 사용"
           onMouseDown={(e) => e.preventDefault()}
           onClick={() => commit({ mode: "default" })}
-          className="shrink-0 rounded border border-gray-300 px-1 text-[10px] text-gray-500 hover:bg-gray-100"
+          className="inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded border border-gray-500 bg-gray-100 px-1 text-xs font-semibold not-italic text-gray-900 hover:bg-gray-200 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-blue-500"
         >
           D
         </button>
@@ -218,7 +218,6 @@ export function ResultGrid({ resultTabId, hiddenColumns, sort, onHeaderClick, ed
   };
 
   const commitCell = (rowIndex: number, column: ColumnMeta, v: { mode: string; value?: string }) => {
-    stopEditing();
     const original = cellText(snapshot.rows[rowIndex]?.[column.index]);
     if (v.mode === "null") {
       const wasNull = snapshot.rows[rowIndex]?.[column.index]?.kind === "null";
@@ -228,7 +227,7 @@ export function ResultGrid({ resultTabId, hiddenColumns, sort, onHeaderClick, ed
         resultTabId,
         rowIndex,
         column.name,
-        v.value === original ? undefined : { value: v.value },
+        v.value === original && snapshot.rows[rowIndex]?.[column.index]?.kind !== "null" ? undefined : { value: v.value },
       );
     }
   };
@@ -366,6 +365,47 @@ export function ResultGrid({ resultTabId, hiddenColumns, sort, onHeaderClick, ed
     const { rows, quoted, error } = parseTsv(text);
     if (error) { setMessage(error); return; }
     if (rows.length === 0) return;
+    if (selection) {
+      const start = selection.focus;
+      if (start.r + rows.length > snapshot.rows.length + edits.inserts.length) {
+        setMessage("붙여넣기 범위가 표시된 행 수를 초과합니다. 필요한 행을 조회하거나 새 행을 추가한 후 다시 붙여넣으세요.");
+        return;
+      }
+      if (rows.some((row) => start.c + row.length > columns.length)) {
+        setMessage("붙여넣기 열 수가 선택한 셀부터 남은 열 수를 초과합니다.");
+        return;
+      }
+      const cells = rows.map((row, r) => row.map((field, c) => interpretMarker(field, quoted[r]?.[c])));
+      // Validate the whole rectangle before changing any drafts.
+      for (const [r, row] of cells.entries()) {
+        const rowIndex = start.r + r;
+        for (const [c, cell] of row.entries()) {
+          const column = columns[start.c + c];
+          if (!edit.editableColumns.has(column.name) || edits.deletes.has(rowIndex)
+            || snapshot.rows[rowIndex]?.[column.index]?.kind === "binary") {
+            setMessage("붙여넣기 범위에 편집할 수 없는 셀 또는 삭제 대기 중인 행이 있습니다.");
+            return;
+          }
+          if (rowIndex < snapshot.rows.length && cell.mode === "default") {
+            setMessage("DEFAULT는 새 행에서만 사용할 수 있습니다.");
+            return;
+          }
+        }
+      }
+      setMessage("");
+      for (const [r, row] of cells.entries()) {
+        const rowIndex = start.r + r;
+        const insert = edits.inserts[rowIndex - snapshot.rows.length];
+        for (const [c, cell] of row.entries()) {
+          const column = columns[start.c + c];
+          if (insert) {
+            editStore.setInsertCell(resultTabId, insert.draftId, column.name,
+              cell.mode === "value" ? { mode: "value", value: cell.value ?? "" } : { mode: cell.mode });
+          } else commitCell(rowIndex, column, cell);
+        }
+      }
+      return;
+    }
     const targets = columns.filter((c) => edit.editableColumns.has(c.name));
     if (targets.length === 0 || rows.some((row) => row.length > targets.length)) {
       setMessage("붙여넣기 열 수가 편집 가능한 열 수를 초과합니다. 열을 맞춘 후 다시 붙여넣으세요.");
@@ -424,9 +464,7 @@ export function ResultGrid({ resultTabId, hiddenColumns, sort, onHeaderClick, ed
         }}
         className={`shrink-0 select-none truncate border-b border-r border-gray-100 px-2 py-1 ${
           draft ? "bg-amber-100 font-medium" : cellClass(cell)
-        } ${draft?.value === null ? "italic text-gray-500" : ""} ${
-          selected ? "bg-blue-200/70" : ""
-        }`}
+        } ${draft?.value === null ? "italic text-gray-500" : ""}`}
         title={shown}
         onMouseDown={(e) => {
           if (e.button !== 0 || isEditing) return;
@@ -448,7 +486,7 @@ export function ResultGrid({ resultTabId, hiddenColumns, sort, onHeaderClick, ed
             initial={draft ? (draft.value ?? "") : cell?.kind === "null" ? "" : cellText(cell)}
             allowDefault={false}
             onCancel={stopEditing}
-            onCommit={(v) => commitCell(rowIndex, c, v)}
+            onCommit={(v) => { commitCell(rowIndex, c, v); stopEditing(); }}
           />
         ) : (
           shown
@@ -609,7 +647,7 @@ export function ResultGrid({ resultTabId, hiddenColumns, sort, onHeaderClick, ed
                           }}
                           className={`shrink-0 truncate border-b border-r border-gray-100 px-2 py-1 ${
                             !cell || cell.mode !== "value" ? "italic text-gray-400" : ""
-                          } ${inSelection(snapshot.rows.length + di, ci) ? "bg-blue-200/70" : ""}`}
+                          }`}
                           onMouseDown={(event) => {
                             if (event.button !== 0 || isEditing) return;
                             event.preventDefault();
