@@ -158,8 +158,11 @@ describe("ConnectionsPage", () => {
     vi.mocked(useOpenConnections).mockReturnValue([["connection-1", profile]]);
     mount();
     const edit = await screen.findByRole("button", { name: "편집" });
-    expect((edit as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.click(edit); expect(screen.queryByText("연결 프로필 편집")).toBeNull();
+    expect(edit.getAttribute("aria-disabled")).toBe("true");
+    expect(screen.queryByRole("status")).toBeNull();
+    fireEvent.click(edit);
+    expect(screen.queryByText("연결 프로필 편집")).toBeNull();
+    expect(screen.getByRole("status").textContent).toContain("'연결 종료' 후 편집");
   });
 
   it("rejects invalid ports without replacing them with 5432", async () => {

@@ -90,6 +90,7 @@ export function ConnectionsPage() {
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   const [passwordProfile, setPasswordProfile] = useState<ConnectionProfile | null>(null);
+  const [lockedEditId, setLockedEditId] = useState<string | null>(null);
   const passwordDialog = useRef<HTMLDialogElement>(null);
   const passwordInput = useRef<HTMLInputElement>(null);
   const nameInput = useRef<HTMLInputElement>(null);
@@ -222,7 +223,9 @@ export function ConnectionsPage() {
           <p id="profile-order-help" className="mb-2 text-xs text-gray-500">손잡이를 드래그하거나 선택 후 ↑/↓ 키로 순서를 바꾸세요.</p>
         )}
         <ul aria-label="저장된 연결" aria-busy={reorder.isPending} className="flex flex-col gap-2">
-          {profiles.data?.map((p, index) => (
+          {profiles.data?.map((p, index) => {
+            const live = activeConnections.some(([, open]) => open.id === p.id);
+            return (
             <li
               key={p.id}
               className={`rounded border p-3 ${dropTargetId === p.id ? "border-blue-500 bg-blue-50 ring-1 ring-blue-500" : "border-gray-200"} ${draggingId === p.id ? "opacity-50" : ""}`}
@@ -302,10 +305,15 @@ export function ConnectionsPage() {
                 </button>
                 <button
                   type="button"
-                  className="rounded border border-gray-300 px-3 py-1 text-xs hover:bg-gray-50"
-                  disabled={saving || activeConnections.some(([, open]) => open.id === p.id)}
-                  title="열린 연결은 종료 후 편집할 수 있습니다"
+                  className="rounded border border-gray-300 px-3 py-1 text-xs hover:bg-gray-50 disabled:opacity-50 aria-disabled:cursor-not-allowed aria-disabled:border-dashed aria-disabled:text-gray-400 aria-disabled:opacity-50 aria-disabled:hover:bg-transparent"
+                  disabled={saving}
+                  // Stays clickable while live so the click can explain why editing is blocked.
+                  aria-disabled={live}
+                  aria-describedby={lockedEditId === p.id ? `edit-locked-${p.id}` : undefined}
+                  title={live ? "열린 연결은 종료 후 편집할 수 있습니다" : undefined}
                   onClick={() => {
+                    if (live) { setLockedEditId(p.id); return; }
+                    setLockedEditId(null);
                     setEditing(p);
                     form.reset({
                       name: p.name, environment: p.environment, host: p.host, port: String(p.port),
@@ -330,8 +338,14 @@ export function ConnectionsPage() {
                   삭제
                 </button>
               </div>
+              {live && lockedEditId === p.id && (
+                <p id={`edit-locked-${p.id}`} role="status" className="mt-2 text-xs text-amber-700">
+                  열린 연결은 편집할 수 없습니다. 연결 화면에서 '연결 종료' 후 편집하세요.
+                </p>
+              )}
             </li>
-          ))}
+            );
+          })}
         </ul>
       </section>
 
