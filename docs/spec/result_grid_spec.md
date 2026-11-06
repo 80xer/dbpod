@@ -93,6 +93,7 @@ editable result:
 - 기본 row height: compact 28px, comfortable 40px
 - overscan: desktop 10행, mobile 6행
 - header는 sticky다.
+- 맨 앞의 행 번호(`#`) column은 horizontal scroll 중에도 왼쪽에 고정된다.
 - pinned column은 horizontal scroll 중 유지된다.
 
 ### 6.2 Column virtualization
@@ -179,12 +180,15 @@ CodeMirror가 focus를 가진 상태에서는 Grid 단축키가 실행되지 않
 ### 9.1 Arbitrary Query Result
 
 - client-side sort/filter는 현재 로딩된 row에만 적용한다.
-- `Loaded rows only` indicator를 표시한다.
+- column header 클릭은 로딩된 row를 해당 column 오름차순, 다시 클릭하면 내림차순으로 번갈아 정렬한다. `#` header 클릭은 받은 순서로 되돌린다. 새로 실행하면 정렬은 해제된다.
+- 정렬 중에도 셀 편집·붙여넣기·복사·행 삭제는 화면에 보이는 행의 원본 row에 적용된다. 편집한 값으로 다시 정렬하지 않으며, 새 행(insert)은 정렬된 행 뒤에 남는다. 전체 복사·CSV/JSON 내보내기는 받은 순서를 유지한다.
+- 더 받을 row가 있거나 결과가 잘린 상태에서 정렬하면 상태줄에 `불러온 행만 정렬`을 표시한다(`Loaded rows only` indicator). 스크롤로 row가 더 들어오면 정렬 위치에 끼워 넣고 선택은 해제한다.
 - SQL을 자동 rewrite해 ORDER BY 또는 WHERE를 삽입하지 않는다.
 
 ### 9.2 Table Data Tab
 
 - sort/filter/page는 server-side로 수행한다.
+- column header 클릭은 해당 column 오름차순, 다시 클릭하면 내림차순을 번갈아 적용한다. `#` header 클릭은 정렬을 해제해 최초 순서로 다시 조회한다.
 - 적용 전 edit buffer가 있으면 저장, 버리기 또는 취소를 선택한다.
 - 새로운 query 결과가 오면 scroll을 시작 위치로 이동한다.
 

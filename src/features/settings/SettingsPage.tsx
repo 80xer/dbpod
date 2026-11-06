@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import { aiModels, appFonts, appFontSizes, resetAppSettings, setAppSettings, useAppSettings, type AiProvider, type AppTheme } from "../../entities/settings/appSettings";
+import { aiModels, appFonts, appFontSizes, INSTALLED_FONT_PREFIX, resetAppSettings, setAppSettings, useAppSettings, type AiProvider, type AppFont, type AppTheme } from "../../entities/settings/appSettings";
+import { ipc } from "../../shared/ipc/invoke";
 import { displayShortcut, shortcutDefinitions, shortcutFromEvent, shortcutGroups, shortcutMatches, shortcutScope, shortcutsConflict, UNBOUND, type ShortcutId } from "../../entities/settings/shortcuts";
 import { useCanGoBack, useNavigate, useRouter } from "@tanstack/react-router";
 
@@ -12,6 +13,16 @@ export function SettingsPage() {
   const navigate = useNavigate();
   const [recording, setRecording] = useState<ShortcutId | null>(null);
   const [shortcutError, setShortcutError] = useState("");
+  const [installedFonts, setInstalledFonts] = useState<string[]>([]);
+  useEffect(() => {
+    let live = true;
+    // Without the list the presets still work, so a failure only hides the installed group.
+    ipc.systemFontFamilies().then((families) => { if (live) setInstalledFonts(families); }, () => {});
+    return () => { live = false; };
+  }, []);
+  // A saved font that has since been uninstalled stays selectable rather than silently switching.
+  const savedFamily = settings.font.startsWith(INSTALLED_FONT_PREFIX) ? settings.font.slice(INSTALLED_FONT_PREFIX.length) : null;
+  const fontChoices = savedFamily && !installedFonts.includes(savedFamily) ? [savedFamily, ...installedFonts] : installedFonts;
 
   const close = useCallback(() => {
     if (canGoBack) router.history.back();
@@ -94,8 +105,15 @@ export function SettingsPage() {
 
           <label className="text-sm">
             <span className="font-medium">폰트</span>
-            <select aria-label="폰트" value={settings.font} onChange={(event) => setAppSettings({ font: event.target.value as typeof settings.font })} className={selectClass}>
-              {appFonts.map((font) => <option key={font.value} value={font.value}>{font.label}</option>)}
+            <select aria-label="폰트" value={settings.font} onChange={(event) => setAppSettings({ font: event.target.value as AppFont })} className={selectClass}>
+              <optgroup label="기본">
+                {appFonts.map((font) => <option key={font.value} value={font.value}>{font.label}</option>)}
+              </optgroup>
+              {fontChoices.length > 0 && (
+                <optgroup label="설치된 폰트">
+                  {fontChoices.map((family) => <option key={family} value={`${INSTALLED_FONT_PREFIX}${family}`}>{family}</option>)}
+                </optgroup>
+              )}
             </select>
           </label>
 

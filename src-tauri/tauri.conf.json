@@ -14,6 +14,7 @@
       {
         "title": "DBPod",
         "dragDropEnabled": false,
+        "zoomHotkeysEnabled": true,
         "width": 1200,
         "height": 800
       }

@@ -162,6 +162,9 @@ export function TableDataView({ connectionId, tab, readOnly, focused, onModeChan
                 sortColumnName ? { column: sortColumnName, descending: view.sortDescending } : undefined
               }
               onHeaderClick={onHeaderClick}
+              onResetSort={() => {
+                if (!running && view.sortAttribute !== null) void fetchPage({ sortAttribute: null, sortDescending: false });
+              }}
               edit={
                 editability?.editable
                   ? { editableColumns: editability.editableColumns }

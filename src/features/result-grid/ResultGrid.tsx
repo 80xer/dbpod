@@ -1,5 +1,5 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { editStore, type InsertCell } from "../../entities/result/editStore";
 import { resultColumnWidths, resultStore } from "../../entities/result/resultStore";
 import type { ColumnMeta, DbValue } from "../../generated/ipc-types";
@@ -8,6 +8,7 @@ import { loadMoreRows } from "../../shared/ipc/queryChannel";
 import { interpretMarker, parseTsv } from "../data-editing/tsv";
 import { cellClass, cellText } from "./cellText";
 import { toCsv, toJson, toTsv } from "./exporters";
+import { sortedRowOrder } from "./sortRows";
 import { getAppSettings } from "../../entities/settings/appSettings";
 import { shortcutMatches } from "../../entities/settings/shortcuts";
 
@@ -54,8 +55,11 @@ type ResultGridProps = {
   resultTabId: string;
   /** Column names to hide (e.g. the Table Data identity column). */
   hiddenColumns?: string[];
+  /** Server-side sort (Table Data). Without `onHeaderClick` the grid sorts its loaded rows itself. */
   sort?: { column: string; descending: boolean };
   onHeaderClick?: (columnName: string) => void;
+  /** Clicking the # header returns to the unsorted order. */
+  onResetSort?: () => void;
   /** Present only when the result is editable. */
   edit?: EditProps;
 };
@@ -120,8 +124,8 @@ function CellEditor({
 }
 
 // ponytail: header + virtualized rows straight from the ResultStore; adopt the
-// TanStack Table column/row model when client sorting/pinning lands.
-export function ResultGrid({ resultTabId, hiddenColumns, sort, onHeaderClick, edit }: ResultGridProps) {
+// TanStack Table column/row model when pinning lands.
+export function ResultGrid({ resultTabId, hiddenColumns, sort, onHeaderClick, onResetSort, edit }: ResultGridProps) {
   const snapshot = useSyncExternalStore(
     useCallback((cb: () => void) => resultStore.subscribe(resultTabId, cb), [resultTabId]),
     () => resultStore.getSnapshot(resultTabId),
@@ -133,13 +137,23 @@ export function ResultGrid({ resultTabId, hiddenColumns, sort, onHeaderClick, ed
   const [editing, setEditing] = useState<EditingCell | null>(null);
   const [message, setMessage] = useState("");
   const [selection, setSelection] = useState<Selection | null>(null);
+  // Client-side sort of the loaded rows, by result column index since names can repeat.
+  const [clientSort, setClientSort] = useState<{ index: number; descending: boolean } | null>(null);
+  // Grid rows are display positions; data rows are indexes into snapshot.rows, which edits key by.
+  // New rows (inserts) stay after the sorted ones, where display and data positions agree.
+  // The snapshot object is replaced on every store change, rows included, so it is the memo key.
+  const order = useMemo(() => (clientSort ? sortedRowOrder(snapshot.rows, clientSort.index, clientSort.descending) : null), [snapshot, clientSort]);
+  const toRow = (display: number) => (order && display < order.length ? order[display] : display);
+  // Keyed by the error object so a new failure resets the "copied" label.
+  const [copiedError, setCopiedError] = useState<unknown>(null);
   const previousRowCount = useRef(snapshot.rows.length);
   useEffect(() => {
     const previous = previousRowCount.current;
     previousRowCount.current = snapshot.rows.length;
     const delta = snapshot.rows.length - previous;
     setSelection((selected) => {
-      if (!selected || delta < 0) return null;
+      // Rows arriving into a sorted view land anywhere, so old positions mean nothing.
+      if (!selected || delta < 0 || (delta && clientSort)) return null;
       const rebase = (position: CellPos) => ({ ...position, r: position.r >= previous ? position.r + delta : position.r });
       const next = { anchor: rebase(selected.anchor), focus: rebase(selected.focus) };
       if (Math.max(next.anchor.r, next.focus.r) >= snapshot.rows.length + edits.inserts.length) return null;
@@ -208,6 +222,19 @@ export function ResultGrid({ resultTabId, hiddenColumns, sort, onHeaderClick, ed
     parentRef.current?.focus({ preventScroll: true });
   };
 
+  const toggleClientSort = (index: number) => {
+    setClientSort((current) => ({ index, descending: current?.index === index ? !current.descending : false }));
+    setSelection(null);
+  };
+  const resetClientSort = () => {
+    setClientSort(null);
+    setSelection(null);
+  };
+  const sortStateOf = (c: ColumnMeta) => {
+    const active = onHeaderClick ? sort?.column === c.name && sort : clientSort?.index === c.index && clientSort;
+    return active ? (active.descending ? "descending" : "ascending") : undefined;
+  };
+
   /**
    * Closing the inline editor unmounts the focused input, which drops focus onto
    * the body. Keyboard navigation and the grid's own keys need it back.
@@ -262,7 +289,7 @@ export function ResultGrid({ resultTabId, hiddenColumns, sort, onHeaderClick, ed
     try {
       const rows = range ? Array.from({ length: range.maxR - range.minR + 1 }, (_, i) => {
         const r = range.minR + i;
-        if (r < snapshot.rows.length) return snapshot.rows[r];
+        if (r < snapshot.rows.length) return snapshot.rows[toRow(r)];
         const draft = edits.inserts[r - snapshot.rows.length];
         return snapshot.columns.map((c): DbValue => {
           const cell = draft?.cells[c.name];
@@ -332,20 +359,20 @@ export function ResultGrid({ resultTabId, hiddenColumns, sort, onHeaderClick, ed
       e.preventDefault();
       const draft = edits.inserts[position.r - snapshot.rows.length];
       setEditing(draft ? { type: "insert", draftId: draft.draftId, column: columns[position.c].name }
-        : { type: "cell", rowIndex: position.r, column: columns[position.c].name });
+        : { type: "cell", rowIndex: toRow(position.r), column: columns[position.c].name });
     } else if (e.key === "Escape") setSelection(null);
   };
 
   const selectedRange = selection ? selectionRange(selection) : null;
   const fullRowsSelected = Boolean(selectedRange && selectedRange.minC === 0 && selectedRange.maxC === columns.length - 1);
   const allSelectedDeleted = fullRowsSelected && selectedRange!.maxR < snapshot.rows.length
-    && Array.from({ length: selectedRange!.maxR - selectedRange!.minR + 1 }, (_, i) => selectedRange!.minR + i).every((r) => edits.deletes.has(r));
+    && Array.from({ length: selectedRange!.maxR - selectedRange!.minR + 1 }, (_, i) => selectedRange!.minR + i).every((r) => edits.deletes.has(toRow(r)));
   const deleteSelectedRows = () => {
     if (!edit || edits.locked || !fullRowsSelected || !selectedRange) return;
     for (let r = selectedRange.minR; r <= selectedRange.maxR; r++) {
       const draft = edits.inserts[r - snapshot.rows.length];
       if (draft) editStore.removeInsert(resultTabId, draft.draftId);
-      else if (r < snapshot.rows.length && edits.deletes.has(r) === Boolean(allSelectedDeleted)) editStore.toggleDelete(resultTabId, r);
+      else if (r < snapshot.rows.length && edits.deletes.has(toRow(r)) === Boolean(allSelectedDeleted)) editStore.toggleDelete(resultTabId, toRow(r));
     }
   };
   const inSelection = (r: number, ci: number) =>
@@ -378,7 +405,7 @@ export function ResultGrid({ resultTabId, hiddenColumns, sort, onHeaderClick, ed
       const cells = rows.map((row, r) => row.map((field, c) => interpretMarker(field, quoted[r]?.[c])));
       // Validate the whole rectangle before changing any drafts.
       for (const [r, row] of cells.entries()) {
-        const rowIndex = start.r + r;
+        const rowIndex = toRow(start.r + r);
         for (const [c, cell] of row.entries()) {
           const column = columns[start.c + c];
           if (!edit.editableColumns.has(column.name) || edits.deletes.has(rowIndex)
@@ -394,8 +421,8 @@ export function ResultGrid({ resultTabId, hiddenColumns, sort, onHeaderClick, ed
       }
       setMessage("");
       for (const [r, row] of cells.entries()) {
-        const rowIndex = start.r + r;
-        const insert = edits.inserts[rowIndex - snapshot.rows.length];
+        const rowIndex = toRow(start.r + r);
+        const insert = edits.inserts[start.r + r - snapshot.rows.length];
         for (const [c, cell] of row.entries()) {
           const column = columns[start.c + c];
           if (insert) {
@@ -433,7 +460,7 @@ export function ResultGrid({ resultTabId, hiddenColumns, sort, onHeaderClick, ed
       case "completed":
         return snapshot.commandTag
           ? `${snapshot.commandTag} 완료 · ${snapshot.affectedRows ?? 0}행 영향 · ${snapshot.durationMs}ms`
-          : `${snapshot.rows.length}행 표시${snapshot.hasMoreRows ? `${snapshot.tablePage ? "" : ` / ${snapshot.rowCount}행`} · 아래로 스크롤하여 추가 조회` : ""}${snapshot.truncated ? (snapshot.pageable ? " (메모리 보호 한도 도달)" : " (행 수 또는 메모리 제한 도달)") : ""} · ${snapshot.durationMs}ms`;
+          : `${snapshot.rows.length}행 표시${snapshot.hasMoreRows ? `${snapshot.tablePage ? "" : ` / ${snapshot.rowCount}행`} · 아래로 스크롤하여 추가 조회` : ""}${snapshot.truncated ? (snapshot.pageable ? " (메모리 보호 한도 도달)" : " (행 수 또는 메모리 제한 도달)") : ""}${clientSort && (snapshot.hasMoreRows || snapshot.truncated) ? " · 불러온 행만 정렬" : ""} · ${snapshot.durationMs}ms`;
       case "failed":
         return `오류: ${snapshot.error?.message ?? "unknown"}${snapshot.error?.sqlState ? ` (SQLSTATE ${snapshot.error.sqlState})` : ""}`;
       case "cancelled":
@@ -441,7 +468,8 @@ export function ResultGrid({ resultTabId, hiddenColumns, sort, onHeaderClick, ed
     }
   })();
 
-  const renderDataCell = (rowIndex: number, c: ColumnMeta, ci: number) => {
+  const renderDataCell = (displayRow: number, c: ColumnMeta, ci: number) => {
+    const rowIndex = toRow(displayRow);
     const row = snapshot.rows[rowIndex];
     const cell = row[c.index];
     const draft = edit ? edits.updates.get(rowIndex)?.get(c.name) : undefined;
@@ -449,13 +477,13 @@ export function ResultGrid({ resultTabId, hiddenColumns, sort, onHeaderClick, ed
     const isEditing =
       editing?.type === "cell" && editing.rowIndex === rowIndex && editing.column === c.name;
     const shown = draft ? (draft.value === null ? "NULL" : draft.value) : cellText(cell);
-    const selected = inSelection(rowIndex, ci);
+    const selected = inSelection(displayRow, ci);
     return (
       <td
         key={c.index}
         role="gridcell"
         aria-selected={selected}
-        data-cell={`${rowIndex}:${ci}`}
+        data-cell={`${displayRow}:${ci}`}
         style={{
           width: `${getColumnWidth(c.name)}px`,
           minWidth: `${getColumnWidth(c.name)}px`,
@@ -470,14 +498,14 @@ export function ResultGrid({ resultTabId, hiddenColumns, sort, onHeaderClick, ed
           if (e.button !== 0 || isEditing) return;
           e.preventDefault();
           parentRef.current?.focus({ preventScroll: true });
-          const pos = { r: rowIndex, c: ci };
+          const pos = { r: displayRow, c: ci };
           setSelection((prev) =>
             e.shiftKey && prev ? { anchor: prev.anchor, focus: pos } : { anchor: pos, focus: pos },
           );
         }}
         onMouseEnter={(e) => {
           if (e.buttons === 1 && !editing)
-            setSelection((prev) => (prev ? { anchor: prev.anchor, focus: { r: rowIndex, c: ci } } : prev));
+            setSelection((prev) => (prev ? { anchor: prev.anchor, focus: { r: displayRow, c: ci } } : prev));
         }}
         onDoubleClick={editable ? () => setEditing({ type: "cell", rowIndex, column: c.name }) : undefined}
       >
@@ -495,6 +523,21 @@ export function ResultGrid({ resultTabId, hiddenColumns, sort, onHeaderClick, ed
     );
   };
 
+  const errorMessage = snapshot.error?.message ?? "알 수 없는 오류가 발생했습니다.";
+  const errorDetails = [
+    ["SQLSTATE", snapshot.error?.sqlState],
+    ["오류 코드", snapshot.error?.code],
+    ["상세 정보", snapshot.error?.detail],
+    ["힌트", snapshot.error?.hint],
+    ["오류 위치", snapshot.error?.position != null ? `${snapshot.error.position}번째 문자` : null],
+  ].filter((entry): entry is [string, string] => entry[1] != null);
+  const copyError = async () => {
+    const error = snapshot.error;
+    try {
+      await navigator.clipboard.writeText([errorMessage, ...errorDetails.map(([label, value]) => `${label}: ${value}`)].join("\n"));
+      setCopiedError(error);
+    } catch (e) { setMessage((e as Error).message ?? String(e)); }
+  };
   return (
     <div className="flex h-full min-h-0 flex-col">
       {message && <p role="alert" className="bg-amber-50 px-3 py-1 text-xs text-amber-800">{message}</p>}
@@ -505,17 +548,18 @@ export function ResultGrid({ resultTabId, hiddenColumns, sort, onHeaderClick, ed
           tabIndex={0}
           className={`min-h-0 overflow-auto border-t border-gray-200 p-4 ${snapshot.rows.length ? "max-h-[60%] shrink-0" : "flex-1"}`}
         >
-          <div className="rounded-lg border border-red-300 bg-gray-50 p-4 text-sm text-gray-800">
-            <h3 className="mb-3 font-semibold">쿼리 실행 오류</h3>
-            <p className="whitespace-pre-wrap break-words font-mono">{snapshot.error?.message ?? "알 수 없는 오류가 발생했습니다."}</p>
+          <div className="relative rounded-lg border border-red-300 bg-gray-50 p-4 text-sm text-gray-800">
+            <button
+              type="button"
+              onClick={() => void copyError()}
+              className="absolute right-2 top-2 rounded border border-gray-300 px-2 py-0.5 text-xs text-gray-600 hover:bg-gray-100"
+            >
+              {copiedError === snapshot.error ? "복사됨" : "오류 복사"}
+            </button>
+            <h3 className="mb-3 pr-20 font-semibold">쿼리 실행 오류</h3>
+            <p className="whitespace-pre-wrap break-words font-mono">{errorMessage}</p>
             <dl className="mt-4 space-y-3">
-              {[
-                ["SQLSTATE", snapshot.error?.sqlState],
-                ["오류 코드", snapshot.error?.code],
-                ["상세 정보", snapshot.error?.detail],
-                ["힌트", snapshot.error?.hint],
-                ["오류 위치", snapshot.error?.position != null ? `${snapshot.error.position}번째 문자` : null],
-              ].filter(([, value]) => value != null).map(([label, value]) => (
+              {errorDetails.map(([label, value]) => (
                 <div key={label} className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-4">
                   <dt className="font-medium text-gray-500">{label}</dt>
                   <dd className="min-w-0 whitespace-pre-wrap break-words font-mono">{value}</dd>
@@ -543,15 +587,17 @@ export function ResultGrid({ resultTabId, hiddenColumns, sort, onHeaderClick, ed
           <table className="border-separate border-spacing-0 text-[13px]">
             <thead className="sticky top-0 z-10">
               <tr role="row" style={{ display: "flex" }}>
-                <th className="w-14 shrink-0 border-b border-r border-gray-200 bg-gray-50 px-2 py-1 text-right font-normal text-gray-400">
+                <th
+                  className="sticky left-0 z-20 w-14 shrink-0 cursor-pointer select-none border-b border-r border-gray-200 bg-gray-50 px-2 py-1 text-right font-normal text-gray-400 hover:bg-gray-100"
+                  title="원래 순서로"
+                  onClick={onHeaderClick ? onResetSort : resetClientSort}
+                >
                   #
                 </th>
                 {columns.map((c) => (
                   <th
                     key={c.index}
-                    className={`relative shrink-0 truncate border-b border-r border-gray-200 bg-gray-50 px-2 py-1 text-left font-medium ${
-                      onHeaderClick ? "cursor-pointer select-none hover:bg-gray-100" : ""
-                    }`}
+                    className="relative shrink-0 cursor-pointer select-none truncate border-b border-r border-gray-200 bg-gray-50 px-2 py-1 text-left font-medium hover:bg-gray-100"
                     style={{
                       width: `${getColumnWidth(c.name)}px`,
                       minWidth: `${getColumnWidth(c.name)}px`,
@@ -559,14 +605,12 @@ export function ResultGrid({ resultTabId, hiddenColumns, sort, onHeaderClick, ed
                       flex: `0 0 ${getColumnWidth(c.name)}px`,
                     }}
                     title={`${c.name} (${c.pgTypeName.toLowerCase()})`}
-                    aria-sort={
-                      sort?.column === c.name ? (sort.descending ? "descending" : "ascending") : undefined
-                    }
-                    onClick={onHeaderClick ? () => onHeaderClick(c.name) : undefined}
+                    aria-sort={sortStateOf(c)}
+                    onClick={() => (onHeaderClick ? onHeaderClick(c.name) : toggleClientSort(c.index))}
                   >
                     {c.name}
-                    {sort?.column === c.name && (
-                      <span className="ml-0.5 text-blue-600">{sort.descending ? "▼" : "▲"}</span>
+                    {sortStateOf(c) && (
+                      <span className="ml-0.5 text-blue-600">{sortStateOf(c) === "descending" ? "▼" : "▲"}</span>
                     )}
                     <span className="ml-1 font-normal text-gray-400">{c.pgTypeName.toLowerCase()}</span>
                     <span
@@ -581,7 +625,7 @@ export function ResultGrid({ resultTabId, hiddenColumns, sort, onHeaderClick, ed
             </thead>
             <tbody style={{ height: virtualizer.getTotalSize(), position: "relative", display: "block" }}>
               {virtualizer.getVirtualItems().map((vi) => {
-                const deleted = edit ? edits.deletes.has(vi.index) : false;
+                const deleted = edit ? edits.deletes.has(toRow(vi.index)) : false;
                 return (
                   <tr
                     key={vi.key}
@@ -596,7 +640,7 @@ export function ResultGrid({ resultTabId, hiddenColumns, sort, onHeaderClick, ed
                     }}
                     className={deleted ? "bg-red-50 line-through opacity-60" : "hover:bg-blue-50"}
                   >
-                    <td role="rowheader" onClick={(event) => selectRow(vi.index, event.shiftKey)} className={`w-14 shrink-0 cursor-pointer border-b border-r border-gray-100 px-1 py-1 text-right ${fullRowsSelected && inSelection(vi.index, 0) ? "bg-blue-200 text-blue-800" : "text-gray-400"}`}>
+                    <td role="rowheader" onClick={(event) => selectRow(vi.index, event.shiftKey)} className={`sticky left-0 z-[1] w-14 shrink-0 cursor-pointer border-b border-r border-gray-100 px-1 py-1 text-right ${fullRowsSelected && inSelection(vi.index, 0) ? "" : "bg-white text-gray-400"}`}>
                         <button
                           type="button"
                           title={`${vi.index + 1}행 선택`}
@@ -615,7 +659,7 @@ export function ResultGrid({ resultTabId, hiddenColumns, sort, onHeaderClick, ed
               <tfoot style={{ display: "block" }}>
                 {edits.inserts.map((draft, di) => (
                   <tr key={draft.draftId} role="row" aria-selected={fullRowsSelected && inSelection(snapshot.rows.length + di, 0)} style={{ display: "flex" }} className="bg-green-50">
-                    <td role="rowheader" onClick={(event) => selectRow(snapshot.rows.length + di, event.shiftKey)} className="w-14 shrink-0 cursor-pointer border-b border-r border-gray-100 px-1 py-1 text-right">
+                    <td role="rowheader" onClick={(event) => selectRow(snapshot.rows.length + di, event.shiftKey)} className="sticky left-0 z-[1] w-14 shrink-0 cursor-pointer border-b border-r border-gray-100 bg-green-50 px-1 py-1 text-right">
                       <button
                         type="button"
                         title={`새 ${di + 1}행 선택`}

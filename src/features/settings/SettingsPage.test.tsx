@@ -1,8 +1,12 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, expect, test, vi } from "vitest";
-import { resetAppSettings } from "../../entities/settings/appSettings";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { resetAppSettings, setAppSettings } from "../../entities/settings/appSettings";
+import { ipc } from "../../shared/ipc/invoke";
 import { SettingsPage } from "./SettingsPage";
+
+vi.mock("../../shared/ipc/invoke", () => ({ ipc: { systemFontFamilies: vi.fn() } }));
+beforeEach(() => { vi.mocked(ipc.systemFontFamilies).mockResolvedValue(["Helvetica", 'Odd "Quote" Sans']); });
 
 const routerMock = vi.hoisted(() => ({ back: vi.fn(), navigate: vi.fn() }));
 vi.mock("@tanstack/react-router", () => ({
@@ -26,6 +30,22 @@ test("applies and persists appearance settings", () => {
   expect(document.documentElement.style.getPropertyValue("--app-font-family")).toContain("ui-monospace");
   expect(document.documentElement.style.getPropertyValue("--app-font-size")).toBe("18px");
   expect(localStorage.getItem("dbpod.app-settings.v1")).toContain('"fontSize":18');
+});
+
+test("lists installed fonts, applies one with a system fallback and keeps a removed one selectable", async () => {
+  render(<SettingsPage />);
+  const select = screen.getByLabelText("폰트") as HTMLSelectElement;
+  const installed = await screen.findByRole("group", { name: "설치된 폰트" });
+  expect(within(installed).getAllByRole("option").map((o) => o.textContent)).toEqual(["Helvetica", 'Odd "Quote" Sans']);
+  fireEvent.change(select, { target: { value: 'font:Odd "Quote" Sans' } });
+  expect(document.documentElement.style.getPropertyValue("--app-font-family")).toBe('"Odd \\"Quote\\" Sans", -apple-system, BlinkMacSystemFont, \'Segoe UI\', sans-serif');
+  expect(localStorage.getItem("dbpod.app-settings.v1")).toContain('"font":"font:Odd \\"Quote\\" Sans"');
+
+  cleanup();
+  setAppSettings({ font: "font:Removed Mono" });
+  render(<SettingsPage />);
+  await waitFor(() => expect((screen.getByLabelText("폰트") as HTMLSelectElement).value).toBe("font:Removed Mono"));
+  expect(within(screen.getByRole("group", { name: "설치된 폰트" })).getAllByRole("option")[0].textContent).toBe("Removed Mono");
 });
 
 test("records custom shortcuts and rejects conflicts", () => {

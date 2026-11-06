@@ -43,6 +43,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::vault_status,
+            commands::system_font_families,
             commands::ai_chat,
             commands::ai_chat_cancel,
             commands::ai_chat_approve,

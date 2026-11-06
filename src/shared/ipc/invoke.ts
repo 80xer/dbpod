@@ -50,6 +50,7 @@ export const ipc = {
   aiChatCancel: (request: AiChatCancelRequest) => invoke<boolean>("ai_chat_cancel", { request }),
   aiChatApprove: (request: AiChatApproveRequest) => invoke<boolean>("ai_chat_approve", { request }),
   vaultStatus: () => invoke<VaultStatus>("vault_status"),
+  systemFontFamilies: () => invoke<string[]>("system_font_families"),
   profileList: () => invoke<ConnectionProfile[]>("connection_profile_list"),
   profileReorder: (profileIds: string[]) =>
     invoke<void>("connection_profile_reorder", { profileIds }),

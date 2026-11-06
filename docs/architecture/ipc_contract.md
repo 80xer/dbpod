@@ -772,6 +772,12 @@ Permission: `dbpod:history-write`
 - 변경 가능한 whitelist
 - security lowering 설정은 별도 확인
 
+### 14.3 `system_font_families` (현재 구현)
+
+인자 없음. 이 기기에 설치된 폰트 family 이름(`string[]`)을 대소문자 무시 순으로 정렬·중복 제거해 반환한다. `.`으로 시작하는 macOS 비공개 시스템 폰트는 제외한다. macOS는 CoreText `CTFontManagerCopyAvailableFontFamilyNames`를 쓰고, 다른 플랫폼은 빈 배열을 반환한다. 민감정보가 없고 상태를 바꾸지 않는다.
+
+설정화면은 기본 폰트(시스템 기본·고딕·고정폭) 아래 "설치된 폰트" 그룹으로 표시하고, 선택값은 WebView `localStorage` 설정에 `font:<family>`로 저장한다. 적용 시 family 이름의 `"`와 `\`를 escape해 따옴표로 감싸고 시스템 기본 폰트를 fallback으로 붙인다. 저장한 폰트가 지워져도 선택값은 유지하고 fallback으로 표시한다.
+
 ## 15. Rate와 size limit
 
 | 항목 | 제한 |

@@ -2,7 +2,8 @@ import { useSyncExternalStore } from "react";
 import { defaultShortcuts, isValidShortcut, shortcutDefinitions, type ShortcutSettings } from "./shortcuts";
 
 export type AppTheme = "system" | "light" | "dark";
-export type AppFont = "system" | "sans" | "mono";
+/** A preset, or `font:<family>` for a font installed on this machine. */
+export type AppFont = "system" | "sans" | "mono" | `font:${string}`;
 export type AiProvider = "claude" | "codex";
 
 export type AppSettings = {
@@ -31,6 +32,18 @@ export const appFonts: Array<{ value: AppFont; label: string; family: string }> 
   { value: "sans", label: "고딕", family: "'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif" },
   { value: "mono", label: "고정폭", family: "ui-monospace, SFMono-Regular, Menlo, Monaco, monospace" },
 ];
+export const INSTALLED_FONT_PREFIX = "font:";
+
+const isInstalledFont = (value: unknown): value is `font:${string}` =>
+  typeof value === "string" && value.startsWith(INSTALLED_FONT_PREFIX) && value.length > INSTALLED_FONT_PREFIX.length
+  && value.length <= 256 && !/[\u0000-\u001f]/.test(value);
+
+/** CSS font-family for a setting; an installed font falls back to the system font if it was removed. */
+export function fontFamilyCss(font: AppFont): string {
+  if (!isInstalledFont(font)) return appFonts.find((option) => option.value === font)!.family;
+  const name = font.slice(INSTALLED_FONT_PREFIX.length).replace(/["\\]/g, "\\$&");
+  return `"${name}", ${appFonts[0].family}`;
+}
 
 const STORAGE_KEY = "dbpod.app-settings.v1";
 const listeners = new Set<() => void>();
@@ -61,7 +74,7 @@ function load(): AppSettings {
     }
     return {
       theme: value && ["system", "light", "dark"].includes(value.theme ?? "") ? value.theme as AppTheme : defaultAppSettings.theme,
-      font: value && appFonts.some((option) => option.value === value.font) ? value.font as AppFont : defaultAppSettings.font,
+      font: value && (appFonts.some((option) => option.value === value.font) || isInstalledFont(value.font)) ? value.font as AppFont : defaultAppSettings.font,
       fontSize: value && appFontSizes.includes(value.fontSize as typeof appFontSizes[number]) ? value.fontSize! : defaultAppSettings.fontSize,
       shortcuts: Object.fromEntries(shortcutDefinitions.map(({ id, defaultValue }) => [
         id,
@@ -83,7 +96,7 @@ function apply(): void {
   const resolvedTheme = settings.theme === "system" ? (media?.matches ? "dark" : "light") : settings.theme;
   document.documentElement.dataset.theme = resolvedTheme;
   document.documentElement.style.colorScheme = resolvedTheme;
-  document.documentElement.style.setProperty("--app-font-family", appFonts.find((option) => option.value === settings.font)!.family);
+  document.documentElement.style.setProperty("--app-font-family", fontFamilyCss(settings.font));
   document.documentElement.style.setProperty("--app-font-size", `${settings.fontSize}px`);
 }
 

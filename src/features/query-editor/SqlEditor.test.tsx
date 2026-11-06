@@ -287,16 +287,37 @@ it("makes definitions selectable but read-only and disables SQL execution shortc
   expect(view.state.doc.toString()).toBe("SELECT 1;");
 });
 
-it("uses Tab and Shift+Tab for editor indentation without moving focus", () => {
+it("indents by four spaces with Tab, Shift+Tab and a new line inside parentheses, without moving focus", () => {
   let view!: EditorView;
   render(<SqlEditor initialSql="SELECT 1;" onViewReady={(next) => { if (next) view = next; }} />);
   const content = screen.getByLabelText("SQL 편집기");
   content.focus();
   fireEvent.keyDown(content, { key: "Tab", code: "Tab" });
-  expect(view.state.doc.toString()).toMatch(/^\s+SELECT 1;$/);
+  expect(view.state.doc.toString()).toBe("    SELECT 1;");
   expect(document.activeElement).toBe(content);
   fireEvent.keyDown(content, { key: "Tab", code: "Tab", shiftKey: true });
   expect(view.state.doc.toString()).toBe("SELECT 1;");
+  view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: "SELECT count(" }, selection: { anchor: 13 } });
+  fireEvent.keyDown(content, { key: "Enter", code: "Enter" });
+  expect(view.state.doc.toString()).toBe("SELECT count(\n    ");
+});
+
+it("colours each full four-column indent step in turn and leaves a partial step plain", () => {
+  render(<SqlEditor initialSql={"select\n        a,\n\t  b\n      c"} />);
+  const steps = (line: number) => [...screen.getByLabelText("SQL 편집기").querySelectorAll(".cm-line")[line].querySelectorAll("[class^='cm-indent-rainbow-']")]
+    .map((span) => [span.className, span.textContent]);
+  expect(steps(0)).toEqual([]);
+  expect(steps(1)).toEqual([["cm-indent-rainbow-0", "    "], ["cm-indent-rainbow-1", "    "]]);
+  // A tab reaches the next stop on its own.
+  expect(steps(2)).toEqual([["cm-indent-rainbow-0", "\t"]]);
+  expect(steps(3)).toEqual([["cm-indent-rainbow-0", "    "]]);
+});
+
+it("colours brackets by nesting depth and skips those in strings and comments", () => {
+  render(<SqlEditor initialSql={"select f(a, (b[1])), '(' -- ("} />);
+  const colours = [...screen.getByLabelText("SQL 편집기").querySelectorAll("[class^='cm-bracket-']")]
+    .map((span) => `${span.textContent}${span.className.slice(-1)}`);
+  expect(colours).toEqual(["(0", "(1", "[2", "]2", ")1", ")0"]);
 });
 
 it("adds the next occurrence as another selection on Cmd+L, and typing edits every one", () => {

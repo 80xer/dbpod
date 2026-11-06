@@ -652,6 +652,11 @@ pub fn vault_status() -> VaultStatus {
 }
 
 #[tauri::command]
+pub fn system_font_families() -> Vec<String> {
+    crate::infrastructure::platform::fonts::families()
+}
+
+#[tauri::command]
 pub fn connection_profile_list(state: State<'_, AppState>) -> Vec<ConnectionProfile> {
     connection_service::profile_list(&state)
 }

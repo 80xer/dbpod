@@ -2,7 +2,7 @@ import { PostgreSQL, sql } from "@codemirror/lang-sql";
 import { acceptCompletion, autocompletion, completionStatus, startCompletion } from "@codemirror/autocomplete";
 import { indentWithTab } from "@codemirror/commands";
 import { findNext, findPrevious, gotoLine, openSearchPanel, search, selectNextOccurrence, selectSelectionMatches } from "@codemirror/search";
-import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
+import { HighlightStyle, indentUnit, syntaxHighlighting } from "@codemirror/language";
 import { EditorSelection, EditorState, Prec, StateEffect, StateField, type SelectionRange } from "@codemirror/state";
 import { EditorView, keymap, tooltips, type Command, type KeyBinding } from "@codemirror/view";
 import { parseMixed, type SyntaxNode } from "@lezer/common";
@@ -11,7 +11,9 @@ import { basicSetup } from "codemirror";
 import { useEffect, useRef } from "react";
 import { getAppSettings } from "../../entities/settings/appSettings";
 import { shortcutToCodeMirror } from "../../entities/settings/shortcuts";
+import { bracketColors } from "./bracketColors";
 import { formatSqlInEditor } from "./formatSql";
+import { indentRainbow } from "./indentRainbow";
 import { sqlCompletionSource } from "./sqlCompletion";
 
 const setSelectionOrigin = StateEffect.define<SelectionRange | null>();
@@ -176,6 +178,11 @@ export function SqlEditor({
           // the bottom edge is cut off by the Result area below it.
           tooltips({ parent: document.body }),
           syntaxHighlighting(dbpodHighlightStyle),
+          // Matches the formatter's tabWidth so typed and formatted SQL line up.
+          indentUnit.of("    "),
+          EditorState.tabSize.of(4),
+          indentRainbow,
+          bracketColors,
           EditorState.readOnly.of(readOnly),
           selectionOrigin,
           EditorView.editable.of(!readOnly),

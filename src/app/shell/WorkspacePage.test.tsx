@@ -34,7 +34,12 @@ vi.mock("../../features/connections/ConnectionsPage", () => ({ ConnectionsPage: 
 vi.mock("../../features/result-grid/QueryResultPane", () => ({
   QueryResultPane: () => <button type="button" data-save-edits="" disabled={editBar.disabled} onClick={editBar.save}>저장…</button>,
 }));
-vi.mock("../../features/result-grid/ResultGrid", () => ({ ResultGrid: () => null }));
+vi.mock("../../features/result-grid/ResultGrid", () => ({
+  ResultGrid: ({ onHeaderClick, onResetSort }: { onHeaderClick?: (column: string) => void; onResetSort?: () => void }) => <>
+    {onHeaderClick && <button type="button" onClick={() => onHeaderClick("id")}>sort id</button>}
+    {onResetSort && <button type="button" onClick={onResetSort}>reset sort</button>}
+  </>,
+}));
 vi.mock("../../features/object-explorer/ObjectSidebar", () => ({
   ObjectSidebar: ({ onOpenObject, onChangeDatabase }: { onOpenObject: (table: { oid: number; schema: string; name: string; kind?: string; functionArguments?: string }) => void; onChangeDatabase: (database: string) => void }) => <>
     <button onClick={() => onOpenObject({ oid: 100, schema: "public", name: "alpha" })}>Open alpha</button>
@@ -724,6 +729,33 @@ it("opens a Table Data tab as one scrollable result without page buttons", async
   expect(ipc.tableDataExecute).toHaveBeenCalledTimes(2);
   expect(vi.mocked(ipc.tableDataExecute).mock.calls[1][0].offset).toBe(0);
   expect(tableDataViews.get(alphaTabId)).toEqual({ sortAttribute: null, sortDescending: false });
+});
+
+it("sorts Table Data by header clicks and returns to the unsorted order from #", async () => {
+  vi.mocked(ipc.metadataGetTable).mockResolvedValue({ relationOid: 100, schema: "public", name: "alpha", kind: "table", primaryKey: [], uniqueKeys: [], rowLevelSecurity: false,
+    columns: [{ attributeNumber: 1, name: "id", pgTypeOid: 23, pgTypeName: "int4", nullable: false, defaultExpr: null, comment: null, isGenerated: false, isPrimaryKey: false }] });
+  await mountWorkspace();
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Open alpha" })); });
+  await waitFor(() => expect(ipc.tableDataExecute).toHaveBeenCalledTimes(1));
+  const sortOf = (call: number) => {
+    const { sortAttribute, sortDescending } = vi.mocked(ipc.tableDataExecute).mock.calls[call][0];
+    return [sortAttribute, sortDescending];
+  };
+  const header = async (name: "#" | "id") => {
+    const button = name === "#" ? "reset sort" : "sort id";
+    await waitFor(() => expect(screen.getByRole("button", { name: button })).toBeTruthy()); // metadata loaded
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: button })); });
+  };
+  await header("#");
+  expect(ipc.tableDataExecute).toHaveBeenCalledTimes(1); // already unsorted: no refetch
+  await header("id");
+  expect(sortOf(1)).toEqual([1, false]);
+  await header("id");
+  expect(sortOf(2)).toEqual([1, true]);
+  await header("id");
+  expect(sortOf(3)).toEqual([1, false]);
+  await header("#");
+  expect(sortOf(4)).toEqual([null, false]);
 });
 
 it("refreshes Table Data with Cmd+R and confirms before discarding pending or in-progress cell edits", async () => {

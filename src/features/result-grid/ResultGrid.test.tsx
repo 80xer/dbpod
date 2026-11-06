@@ -19,7 +19,37 @@ beforeEach(() => {
   render(<ResultGrid resultTabId="grid" edit={{ editableColumns: new Set(["name"]) }} />);
 });
 afterEach(cleanup);
-test("shows detailed execution errors alongside the footer and clears them on rerun", () => {
+test("sorts loaded rows from the header while edits, copy and delete still reach the right rows", async () => {
+  const grid = screen.getByRole("grid");
+  const names = () => within(grid).getAllByRole("gridcell").filter((cell) => cell.getAttribute("data-cell")?.endsWith(":1")).map((cell) => cell.textContent);
+  const header = screen.getByRole("columnheader", { name: /^name/ });
+  fireEvent.click(header);
+  expect(header.getAttribute("aria-sort")).toBe("ascending");
+  fireEvent.click(header);
+  expect(header.getAttribute("aria-sort")).toBe("descending");
+  expect(names()).toEqual(["Beta", "Alpha"]);
+
+  // Display row 0 is data row 1 (Beta).
+  fireEvent.doubleClick(screen.getByText("Beta"));
+  fireEvent.change(screen.getByLabelText("셀 편집"), { target: { value: "Bravo" } });
+  fireEvent.keyDown(screen.getByLabelText("셀 편집"), { key: "Enter" });
+  expect(editStore.getSnapshot("grid").updates.get(1)?.get("name")).toEqual({ value: "Bravo" });
+  expect(names()).toEqual(["Bravo", "Alpha"]); // an edit does not re-sort under the cursor
+
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+  fireEvent.click(screen.getByRole("button", { name: "2행 선택" }));
+  fireEvent.keyDown(grid, { key: "c", code: "KeyC", metaKey: true });
+  await waitFor(() => expect(writeText).toHaveBeenCalledWith("1\tAlpha"));
+  fireEvent.click(screen.getByRole("button", { name: "선택 행 삭제" }));
+  expect(editStore.getSnapshot("grid").deletes).toEqual(new Set([0]));
+
+  fireEvent.click(screen.getByRole("columnheader", { name: "#" }));
+  expect(header.getAttribute("aria-sort")).toBeNull();
+  expect(names()).toEqual(["Alpha", "Bravo"]);
+});
+
+test("shows detailed execution errors alongside the footer and clears them on rerun", async () => {
   const error = {
     code: "POSTGRES_ERROR", message: 'column "missing" does not exist', retryable: false,
     sqlState: "42703", position: 8, detail: "First line\nSecond line", hint: 'Perhaps you meant "name".',
@@ -31,6 +61,11 @@ test("shows detailed execution errors alongside the footer and clears them on re
   expect(details.getByText(/First line/).textContent).toBe(error.detail);
   expect(screen.getByText(`오류: ${error.message} (SQLSTATE 42703)`)).toBeTruthy();
   expect(within(screen.getByRole("grid")).getByText("Alpha")).toBeTruthy();
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+  await act(async () => { fireEvent.click(details.getByRole("button", { name: "오류 복사" })); });
+  expect(writeText).toHaveBeenCalledWith([error.message, "SQLSTATE: 42703", "오류 코드: POSTGRES_ERROR", `상세 정보: ${error.detail}`, `힌트: ${error.hint}`, "오류 위치: 8번째 문자"].join("\n"));
+  expect(details.getByRole("button", { name: "복사됨" })).toBeTruthy();
 
   act(() => { resultStore.create("grid", "SELECT 1"); });
   expect(screen.queryByRole("alert")).toBeNull();
@@ -40,6 +75,7 @@ test("shows detailed execution errors alongside the footer and clears them on re
     position: null, detail: null, hint: null,
   } }); });
   expect(within(screen.getByRole("alert")).getByText("database connection lost")).toBeTruthy();
+  expect(within(screen.getByRole("alert")).getByRole("button", { name: "오류 복사" })).toBeTruthy();
   for (const label of ["SQLSTATE", "상세 정보", "힌트", "오류 위치"])
     expect(screen.queryByText(label)).toBeNull();
   expect(screen.queryByRole("grid")).toBeNull();

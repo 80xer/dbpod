@@ -1024,6 +1024,8 @@ dependencies = [
  "chrono",
  "futures-util",
  "keyring",
+ "objc2-core-foundation",
+ "objc2-core-text",
  "ring",
  "serde",
  "serde_json",

@@ -23,7 +23,7 @@ export function formatSqlInEditor(view: EditorView): boolean {
   const original = doc.slice(range.from, range.to);
   let formatted: string;
   try {
-    formatted = format(original, { language: "postgresql", keywordCase: "lower", tabWidth: 2 });
+    formatted = format(original, { language: "postgresql", keywordCase: "lower", tabWidth: 4 });
   } catch {
     // Unparseable SQL is left exactly as typed; the editor is not a linter.
     return false;

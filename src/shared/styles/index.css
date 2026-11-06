@@ -12,6 +12,10 @@
   --syntax-name: #1f2937;
   --syntax-operator: #374151;
   --syntax-selection-bg: #93c5fd;
+  /* VS Code bracket pair colorization, light and dark themes. */
+  --bracket-0: #0431fa;
+  --bracket-1: #319331;
+  --bracket-2: #7b3814;
   font-family: var(--app-font-family);
   font-size: var(--app-font-size);
 }
@@ -49,6 +53,9 @@ html[data-theme="dark"] {
   --syntax-name: #e5e7eb;
   --syntax-operator: #d1d5db;
   --syntax-selection-bg: #1e3a8a;
+  --bracket-0: #ffd700;
+  --bracket-1: #da70d6;
+  --bracket-2: #179fff;
 }
 
 html[data-theme="dark"] .bg-white,
@@ -73,13 +80,27 @@ html[data-theme="dark"] .text-gray-400 { color: #9ca3af; }
 html[data-theme="dark"] .text-gray-300 { color: #6b7280; }
 
 /* Selected cells need their own foreground, including muted NULL and DEFAULT values. */
-[role="gridcell"][aria-selected="true"] {
+[role="gridcell"][aria-selected="true"],
+[role="row"][aria-selected="true"] > [role="rowheader"] {
   background-color: #bfdbfe;
   color: #111827;
 }
-html[data-theme="dark"] [role="gridcell"][aria-selected="true"] {
+html[data-theme="dark"] [role="gridcell"][aria-selected="true"],
+html[data-theme="dark"] [role="row"][aria-selected="true"] > [role="rowheader"] {
   background-color: #1e3a8a;
   color: #f3f4f6;
+}
+
+/* The bracket paired with the cursor's. An outline stands out against any of the
+   three bracket colours; extra specificity beats CodeMirror's faint default. */
+html .cm-editor .cm-line .cm-matchingBracket {
+  background-color: rgba(249, 115, 22, 0.3);
+  outline: 1px solid #ea580c;
+  border-radius: 2px;
+}
+html[data-theme="dark"] .cm-editor .cm-line .cm-matchingBracket {
+  background-color: rgba(251, 146, 60, 0.35);
+  outline-color: #fb923c;
 }
 
 html[data-theme="dark"] .border-gray-100,

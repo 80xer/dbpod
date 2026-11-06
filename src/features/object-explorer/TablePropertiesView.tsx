@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { Fragment, useState } from "react";
-import type { TableIndex, TableIndexColumn, TableMetadata } from "../../generated/ipc-types";
+import type { TableColumnMetadata, TableIndex, TableIndexColumn, TableMetadata } from "../../generated/ipc-types";
 import type { TableDataTarget } from "../../entities/workspace/workspaceStore";
 import { ipc } from "../../shared/ipc/invoke";
 import { DefinitionView } from "./DefinitionView";
@@ -58,28 +58,59 @@ export function TablePropertiesView({ connectionId, target, meta, section, onSec
   );
 }
 
+/** Sortable headers and the text each sorts by, which is the text the cell shows. */
+const COLUMN_FIELDS: [string, (c: TableColumnMetadata) => string][] = [
+  ["column name", (c) => c.name],
+  ["data type", (c) => c.pgTypeName],
+  ["not null", (c) => (c.nullable ? "YES" : "NO")],
+  ["default", (c) => c.defaultExpr ?? "-"],
+  ["comment", (c) => c.comment ?? "-"],
+];
+
 function ColumnsTable({ meta }: { meta: TableMetadata | undefined }) {
+  // null = catalog order (attribute number), which # restores.
+  const [sort, setSort] = useState<{ field: number; descending: boolean } | null>(null);
+  // Keyed by attribute number so the highlighted column stays put when the rows are re-sorted.
+  const [selected, setSelected] = useState<number | null>(null);
+  const columns = meta?.columns ?? [];
+  const rows = sort === null ? columns : [...columns].sort((a, b) => {
+    const get = COLUMN_FIELDS[sort.field][1];
+    // Stable sort keeps catalog order among equal values in both directions.
+    const order = get(a).localeCompare(get(b), undefined, { numeric: true, sensitivity: "base" });
+    return sort.descending ? -order : order;
+  });
+  const headerButton = "w-full text-left hover:text-gray-900";
   return (
-    <table className="min-w-full table-auto border-separate border-spacing-0 text-xs">
+    <table aria-label="컬럼" className="min-w-full table-auto border-separate border-spacing-0 text-xs">
       <thead className="sticky top-0 bg-gray-50">
         <tr>
-          <th className={TH}>#</th>
-          <th className={TH}>column name</th>
-          <th className={TH}>data type</th>
-          <th className={TH}>not null</th>
-          <th className={TH}>default</th>
-          <th className={TH}>comment</th>
+          <th className={TH}>
+            <button type="button" className={headerButton} title="원래 순서로" onClick={() => setSort(null)}>#</button>
+          </th>
+          {COLUMN_FIELDS.map(([label], field) => (
+            <th key={label} className={TH} aria-sort={sort?.field === field ? (sort.descending ? "descending" : "ascending") : undefined}>
+              <button
+                type="button"
+                className={headerButton}
+                onClick={() => setSort(sort?.field === field ? { field, descending: !sort.descending } : { field, descending: false })}
+              >
+                {label}
+                {sort?.field === field && <span aria-hidden="true" className="ml-0.5 text-blue-600">{sort.descending ? "▼" : "▲"}</span>}
+              </button>
+            </th>
+          ))}
         </tr>
       </thead>
       <tbody>
-        {meta?.columns.map((column) => (
-          <tr key={column.attributeNumber}>
+        {rows.map((column) => (
+          <tr
+            key={column.attributeNumber}
+            aria-selected={selected === column.attributeNumber}
+            onClick={() => setSelected(column.attributeNumber)}
+            className={`cursor-default ${selected === column.attributeNumber ? "bg-blue-100" : "hover:bg-blue-50"}`}
+          >
             <td className={TD}>{column.attributeNumber}</td>
-            <td className={TD}>{column.name}</td>
-            <td className={TD}>{column.pgTypeName}</td>
-            <td className={TD}>{column.nullable ? "YES" : "NO"}</td>
-            <td className={TD}>{column.defaultExpr ?? "-"}</td>
-            <td className={TD}>{column.comment ?? "-"}</td>
+            {COLUMN_FIELDS.map(([label, get]) => <td key={label} className={TD}>{get(column)}</td>)}
           </tr>
         ))}
         {!meta && (
